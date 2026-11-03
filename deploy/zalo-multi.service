@@ -1,0 +1,40 @@
+# Dịch vụ systemd cho Zalo Multi. Chép vào /etc/systemd/system/ rồi: systemctl enable --now zalo-multi
+# Xem nhật ký: journalctl -u zalo-multi -f
+[Unit]
+Description=Zalo Multi - nhieu tai khoan Zalo tren mot web app
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning /srv/zalo-multi/server/index.js
+Environment=NODE_ENV=production
+Environment=PORT=8788
+Environment=HOST=127.0.0.1
+Environment=BASE_PATH=/app
+# Dữ liệu (DB, khoá mã hoá, khoá VAPID) nằm ở /var/lib/zalo-multi, không bị xoá khi cập nhật code
+Environment=DATA_DIR=/var/lib/zalo-multi
+# Email liên hệ gửi kèm push (bắt buộc theo chuẩn Web Push); có thể đặt trong /etc/zalo-multi.env
+Environment=VAPID_SUBJECT=mailto:admin@example.com
+EnvironmentFile=-/etc/zalo-multi.env
+StateDirectory=zalo-multi
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/zalo-multi
+Restart=always
+RestartSec=3
+TimeoutStopSec=10
+
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#0068ff"/>
+  <path d="M150 168h212c26 0 46 20 46 46v104c0 26-20 46-46 46H262l-62 44v-44h-50c-26 0-46-20-46-46V214c0-26 20-46 46-46z" fill="#fff" opacity=".55" transform="translate(-36 -40)"/>
+  <path d="M186 208h212c26 0 46 20 46 46v104c0 26-20 46-46 46h-50v44l-62-44H186c-26 0-46-20-46-46V254c0-26 20-46 46-46z" fill="#fff"/>
+  <text x="292" y="336" font-family="Arial, Helvetica, sans-serif" font-size="104" font-weight="700" fill="#0068ff" text-anchor="middle">Z+</text>
+</svg>
