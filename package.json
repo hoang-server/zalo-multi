@@ -1,6 +1,6 @@
 {
   "name": "zalo-multi",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Dùng nhiều tài khoản Zalo trên một điện thoại qua web app (PWA) có thông báo push",
   "type": "module",
   "main": "server/index.js",

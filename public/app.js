@@ -57,6 +57,9 @@ function parseRoute() {
   if (h[0] === "login") return { name: "login" };
   if (h[0] === "settings") return { name: "settings" };
   if (h[0] === "admin") return { name: "admin" };
+  if (h[0] === "inbox") return { name: "inbox" };
+  if (h[0] === "a" && h[1] && h[3] && h[4] === "media") return { name: "gallery", acc: Number(h[1]), type: Number(h[2]), tid: decodeURIComponent(h[3]) };
+  if (h[0] === "a" && h[1] && h[3] && h[4] === "m" && h[5]) return { name: "chat", acc: Number(h[1]), type: Number(h[2]), tid: decodeURIComponent(h[3]), around: decodeURIComponent(h[5]) };
   if (h[0] === "a" && h[2] === "me") return { name: "profile", acc: Number(h[1]), own: true };
   if (h[0] === "a" && h[2] === "u" && h[3]) return { name: "profile", acc: Number(h[1]), uid: decodeURIComponent(h[3]), back: "history" };
   if (h[0] === "a" && h[1] && h[3] && h[4] === "info") return h[2] === "1"
@@ -89,6 +92,8 @@ async function render() {
     }
     state.opened = true;
     if (r.name === "threads") return renderThreads(r.acc);
+    if (r.name === "inbox") return renderInbox();
+    if (r.name === "gallery") return renderGallery(r);
     if (r.name === "chat") return renderChat(r);
     if (r.name === "profile") return renderProfile(r);
     if (r.name === "group") return renderGroupInfo(r);
@@ -148,6 +153,9 @@ function renderHome() {
   <main class="scroll">
     ${installHint()}
     ${pushBanner()}
+    ${state.accounts.length ? `<a class="row inbox-row" href="#/inbox"><span class="avatar ph big-ico">📥</span>
+      <div class="grow"><div class="name">Hộp thư chung</div><div class="sub">Tin mới của mọi tài khoản · tìm trong tin nhắn</div></div>
+      ${(() => { const n = state.accounts.reduce((s, a) => s + (a.unread || 0), 0); return n ? `<span class="pill">${n > 99 ? "99+" : n}</span>` : ""; })()}</a>` : ""}
     <ul class="list">
       ${state.accounts.map((a) => `
         <li><a class="row" href="#/a/${a.id}">
@@ -174,10 +182,58 @@ function accountSwitcher(activeId) {
     </a>`).join("")}</nav>`;
 }
 
+// Bộ lọc hội thoại dùng chung cho danh sách của tài khoản và hộp thư chung
+const FILTERS = [["all", "Tất cả"], ["unread", "Chưa đọc"], ["user", "Cá nhân"], ["group", "Nhóm"]];
+const filterBar = (f) => `<div class="filters">${FILTERS.map(([k, t]) => `<button type="button" data-f="${k}" class="${f === k ? "on" : ""}">${t}</button>`).join("")}</div>`;
+const chatHash = (acc, type, tid, msgId) => `#/a/${acc}/${type}/${encodeURIComponent(tid)}${msgId ? `/m/${encodeURIComponent(msgId)}` : ""}`;
+function threadRow(t, acc, showAcc) {
+  return `<li><a class="row" href="${chatHash(acc, t.type, t.threadId)}" data-acc="${acc}" data-type="${t.type}" data-tid="${esc(t.threadId)}">
+    <span class="avw">${avBadge(t.avatar, t.name, t.unread, "", t.muted)}${showAcc ? `<span class="acc-mini">${avatar(t.accountAvatar, t.accountName, "xs")}</span>` : ""}</span>
+    <div class="grow"><div class="name">${t.type === 1 ? "👥 " : ""}${esc(t.name)}${t.muted ? " 🔕" : ""}</div>
+      <div class="sub ${t.unread ? "bold" : ""}">${showAcc ? `<span class="muted">${esc(t.accountName)}: </span>` : ""}${esc(emoticons(t.lastText || ""))}</div></div>
+    <div class="meta"><div class="time">${t.lastTs ? timeLabel(t.lastTs) : ""}</div>${t.pinned ? `<div class="pin" title="Đã ghim">📌</div>` : ""}</div>
+  </a></li>`;
+}
+const hitText = (m) => (m.kind === "text" ? m.text : m.title || m.text || "");
+function searchRow(m, showAcc) {
+  return `<li><a class="row" href="${chatHash(m.accountId, m.type, m.threadId, m.msgId)}">${avatar(m.avatar, m.threadName, "sm")}
+    <div class="grow"><div class="name small">${esc(m.threadName || m.threadId)}${showAcc ? ` <span class="muted">· ${esc(m.accountName)}</span>` : ""}</div>
+      <div class="sub">${esc(m.isSelf ? "Bạn" : m.fromName || "")}: ${esc(emoticons(hitText(m)))}</div></div>
+    <div class="meta"><div class="time">${timeLabel(m.ts)}</div></div></a></li>`;
+}
+// Giữ lâu / chuột phải vào một hội thoại: ghim, tắt thông báo
+function bindThreadMenu(list, findThread) {
+  const open = (row) => {
+    const acc = Number(row.dataset.acc), type = Number(row.dataset.type), tid = row.dataset.tid;
+    const t = findThread(acc, type, tid); if (!t) return;
+    const path = `accounts/${acc}/threads/${type}/${encodeURIComponent(tid)}`;
+    sheet([
+      [t.pinned ? "📌 Bỏ ghim" : "📌 Ghim lên đầu", () => api("POST", `${path}/pin`, { pinned: !t.pinned }).then(render)],
+      [t.muted ? "🔔 Bật thông báo" : "🔕 Tắt thông báo", () => api("POST", `${path}/mute`, { muted: !t.muted }).then(render)],
+      ["🖼 Ảnh, file, link", () => go(`#/a/${acc}/${type}/${encodeURIComponent(tid)}/media`)],
+    ]);
+  };
+  list.oncontextmenu = (e) => { const row = e.target.closest(".row[data-tid]"); if (row) { e.preventDefault(); open(row); } };
+  let press, fired = false;
+  list.addEventListener("touchstart", (e) => {
+    const row = e.target.closest(".row[data-tid]"); if (!row) return;
+    fired = false;
+    press = setTimeout(() => { fired = true; navigator.vibrate?.(15); open(row); }, 500);
+  }, { passive: true });
+  const cancel = () => clearTimeout(press);
+  list.addEventListener("touchmove", cancel, { passive: true });
+  list.addEventListener("touchend", (e) => { cancel(); if (fired) e.preventDefault(); }); // đã mở menu thì không mở hội thoại
+}
+
 async function renderThreads(accId, q = state.q || "") {
   const acc = state.accounts.find((a) => a.id === accId);
   if (!acc) return go("#/");
-  state.threads = (await api("GET", `accounts/${accId}/threads?q=${encodeURIComponent(q)}`)).threads;
+  const f = state.filter || "all";
+  const [{ threads }, hits] = await Promise.all([
+    api("GET", `accounts/${accId}/threads?q=${encodeURIComponent(q)}&f=${f}`),
+    q.trim().length >= 2 ? api("GET", `search?acc=${accId}&q=${encodeURIComponent(q.trim())}`).then((r) => r.results) : [],
+  ]);
+  state.threads = threads; state.threadsAcc = accId;
   const keepFocus = document.activeElement?.id === "q";
   $app.innerHTML = `
   ${header(esc(acc.name), { back: "#/", right: `<a class="icon-btn" href="#/settings" aria-label="Cài đặt">⚙︎</a><button class="icon-btn" id="menu" aria-label="Tuỳ chọn">⋯</button>` })}
@@ -185,18 +241,19 @@ async function renderThreads(accId, q = state.q || "") {
   ${acc.status !== "online" ? `<div class="warn">${esc(acc.statusMsg || statusText[acc.status])}
      ${["kicked", "offline", "reconnecting"].includes(acc.status) ? `<button class="btn sm" id="rc">Kết nối lại</button>` : ""}
      ${acc.status === "expired" ? `<button class="btn sm" id="reqr">Quét QR</button>` : ""}</div>` : ""}
-  <div class="search"><input id="q" type="search" placeholder="Tìm hội thoại" value="${esc(q)}"></div>
+  <div class="search"><input id="q" type="search" placeholder="Tìm hội thoại hoặc nội dung tin nhắn" value="${esc(q)}"></div>
+  ${q ? "" : filterBar(f)}
   <main class="scroll">
-    <ul class="list">${state.threads.map((t) => `
-      <li><a class="row" href="#/a/${accId}/${t.type}/${encodeURIComponent(t.threadId)}">
-        ${avBadge(t.avatar, t.name, t.unread, "", t.muted)}
-        <div class="grow"><div class="name">${t.type === 1 ? "👥 " : ""}${esc(t.name)}${t.muted ? " 🔕" : ""}</div>
-          <div class="sub ${t.unread ? "bold" : ""}">${esc(emoticons(t.lastText || ""))}</div></div>
-        <div class="meta"><div class="time">${t.lastTs ? timeLabel(t.lastTs) : ""}</div>
-          </div>
-      </a></li>`).join("")}</ul>
-    ${state.threads.length ? "" : `<p class="center muted">Chưa có tin nhắn. Tin mới sẽ hiện ở đây.<br><button class="link" id="sync2">Tải danh bạ & nhóm</button></p>`}
+    ${q && state.threads.length ? `<div class="sec">Hội thoại</div>` : ""}
+    <ul class="list" id="tlist">${state.threads.map((t) => threadRow(t, accId)).join("")}</ul>
+    ${hits.length ? `<div class="sec">Tin nhắn (${hits.length}${hits.length >= 80 ? "+" : ""})</div><ul class="list">${hits.map((m) => searchRow(m)).join("")}</ul>` : ""}
+    ${state.threads.length || hits.length ? "" : q ? `<p class="center muted">Không tìm thấy “${esc(q)}”.</p>`
+      : f !== "all" ? `<p class="center muted">Không có hội thoại nào ở mục này.</p>`
+      : `<p class="center muted">Chưa có tin nhắn. Tin mới sẽ hiện ở đây.<br><button class="link" id="sync2">Tải danh bạ & nhóm</button></p>`}
+    ${q || state.threads.length < 3 ? "" : `<p class="muted small center pad">Giữ lâu một hội thoại để ghim lên đầu.</p>`}
   </main>`;
+  document.querySelectorAll("[data-f]").forEach((b) => b.onclick = () => { state.filter = b.dataset.f; renderThreads(accId, q); });
+  bindThreadMenu(document.getElementById("tlist"), (a, type, tid) => state.threads.find((t) => t.type === type && t.threadId === tid));
   const qEl = document.getElementById("q");
   if (keepFocus) { qEl.focus(); qEl.setSelectionRange(q.length, q.length); }
   qEl.oninput = () => { clearTimeout(renderThreads.t); renderThreads.t = setTimeout(() => { state.q = qEl.value; renderThreads(accId, qEl.value); }, 250); };
@@ -224,6 +281,34 @@ async function renderThreads(accId, q = state.q || "") {
     ["🚪 Đăng xuất khỏi app", logout],
   ]);
 }
+
+async function renderInbox(q = state.iq || "") {
+  const f = state.ifilter || "all";
+  const [{ threads }, hits] = await Promise.all([
+    api("GET", `inbox?f=${f}`),
+    q.trim().length >= 2 ? api("GET", `search?q=${encodeURIComponent(q.trim())}`).then((r) => r.results) : [],
+  ]);
+  const nq = q.trim() ? unaccentJs(q.trim()) : "";
+  const list = nq ? threads.filter((t) => unaccentJs(t.name).includes(nq)) : threads;
+  state.inbox = threads;
+  const keepFocus = document.activeElement?.id === "iq";
+  $app.innerHTML = `
+  ${header("Hộp thư chung", { back: "#/", right: `<a class="icon-btn" href="#/settings" aria-label="Cài đặt">⚙︎</a>` })}
+  <div class="search"><input id="iq" type="search" placeholder="Tìm trong mọi tài khoản" value="${esc(q)}"></div>
+  ${q ? "" : filterBar(f)}
+  <main class="scroll">
+    ${q && list.length ? `<div class="sec">Hội thoại</div>` : ""}
+    <ul class="list" id="tlist">${list.map((t) => threadRow(t, t.accountId, true)).join("")}</ul>
+    ${hits.length ? `<div class="sec">Tin nhắn (${hits.length}${hits.length >= 80 ? "+" : ""})</div><ul class="list">${hits.map((m) => searchRow(m, true)).join("")}</ul>` : ""}
+    ${list.length || hits.length ? "" : `<p class="center muted">${q ? `Không tìm thấy “${esc(q)}”.` : "Không có hội thoại nào ở mục này."}</p>`}
+  </main>`;
+  const qEl = document.getElementById("iq");
+  if (keepFocus) { qEl.focus(); qEl.setSelectionRange(q.length, q.length); }
+  qEl.oninput = () => { clearTimeout(renderInbox.t); renderInbox.t = setTimeout(() => { state.iq = qEl.value; renderInbox(qEl.value); }, 300); };
+  document.querySelectorAll("[data-f]").forEach((b) => b.onclick = () => { state.ifilter = b.dataset.f; renderInbox(q); });
+  bindThreadMenu(document.getElementById("tlist"), (a, type, tid) => state.inbox.find((t) => t.accountId === a && t.type === type && t.threadId === tid));
+}
+const unaccentJs = (s) => String(s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D").toLowerCase();
 
 function sheet(items) {
   const el = document.createElement("div");
@@ -275,12 +360,16 @@ async function renderChat(r) {
   const acc = state.accounts.find((a) => a.id === r.acc);
   if (!acc) return go("#/");
   const [{ messages }, { threads }] = await Promise.all([
-    api("GET", `${tpath(r)}/messages`),
+    api("GET", `${tpath(r)}/messages${r.around ? `?around=${encodeURIComponent(r.around)}` : ""}`),
     state.threads.length && state.threadsAcc === r.acc ? { threads: state.threads } : api("GET", `accounts/${r.acc}/threads`),
   ]);
   state.threads = threads; state.threadsAcc = r.acc;
   state.messages = messages;
-  state.reply = null;
+  state.reply = null; state.tray = [];
+  // đang xem quanh một tin tìm được: có thể còn tin mới hơn chưa tải
+  const target = r.around && messages.find((m) => m.msgId === r.around);
+  const newer = target ? messages.filter((m) => m.ts > target.ts).length >= 30 : false;
+  state.gap = newer;
   const t = threads.find((x) => x.threadId === r.tid && x.type === r.type) || { name: r.tid };
   const online = acc.status === "online";
   $app.innerHTML = `
@@ -289,7 +378,10 @@ async function renderChat(r) {
   <main class="scroll chat" id="msgs">
     ${messages.length >= 60 ? `<div class="center"><button class="link" id="older">Xem tin cũ hơn</button></div>` : ""}
     <div id="mlist">${messages.map((m) => bubble(m, r.type)).join("")}</div>
+    ${newer ? `<div class="center"><a class="link" href="${chatHash(r.acc, r.type, r.tid)}">Xem tin mới nhất ↓</a></div>` : ""}
   </main>
+  <div id="tray" class="tray" hidden></div>
+  <div id="qsug" class="qsug" hidden></div>
   <div id="replybar" class="replybar" hidden></div>
   <div id="panel" class="panel" hidden></div>
   <form class="composer" id="cf">
@@ -299,7 +391,10 @@ async function renderChat(r) {
     <textarea id="txt" rows="1" placeholder="Nhập tin nhắn" ${online ? "" : "disabled"}></textarea>
     <button class="icon-btn send" type="submit" aria-label="Gửi">➤</button>
   </form>`;
-  scrollBottom();
+  if (target) {
+    const el = document.querySelector(`.msg[data-mid="${CSS.escape(r.around)}"]`);
+    el?.scrollIntoView({ block: "center" }); el?.classList.add("hl");
+  } else scrollBottom();
   loadAccounts().catch(() => {}); // cập nhật số trên icon app sau khi đọc
   navigator.serviceWorker?.ready.then((reg) => reg.getNotifications({ tag: `${r.acc}-${r.type}-${r.tid}` }))
     .then((ns) => ns?.forEach((n) => n.close())).catch(() => {});
@@ -307,42 +402,45 @@ async function renderChat(r) {
     await api("POST", `${tpath(r)}/mute`, { muted: !t.muted });
     t.muted = t.muted ? 0 : 1; toast(t.muted ? "Đã tắt thông báo hội thoại" : "Đã bật thông báo hội thoại"); renderChat(r);
   };
+  const media = `#/a/${r.acc}/${r.type}/${encodeURIComponent(r.tid)}/media`;
   document.getElementById("cmenu").onclick = () => sheet([
     [r.type === 1 ? "👥 Thông tin nhóm" : "👤 Xem trang cá nhân", () => go(`#/a/${r.acc}/${r.type}/${encodeURIComponent(r.tid)}/info`)],
+    ["🔍 Tìm tin nhắn", () => { state.galleryTab = "search"; go(media); }],
+    ["🖼 Ảnh, file, link đã gửi", () => { state.galleryTab = "media"; go(media); }],
+    [t.pinned ? "📌 Bỏ ghim hội thoại" : "📌 Ghim hội thoại lên đầu", async () => {
+      await api("POST", `${tpath(r)}/pin`, { pinned: !t.pinned }); t.pinned = t.pinned ? 0 : 1;
+      toast(t.pinned ? "Đã ghim" : "Đã bỏ ghim");
+    }],
     [t.muted ? "🔔 Bật thông báo hội thoại này" : "🔕 Tắt thông báo hội thoại này", muteToggle],
   ]);
 
   // soạn & gửi
   const txt = document.getElementById("txt");
   let lastTyping = 0;
+  loadQuick();
   txt.oninput = () => {
     txt.style.height = "auto"; txt.style.height = Math.min(txt.scrollHeight, 140) + "px";
+    quickSuggest(txt);
     if (txt.value && Date.now() - lastTyping > 4000) { lastTyping = Date.now(); api("POST", `${tpath(r)}/typing`).catch(() => {}); }
   };
-  txt.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && !isIOS && !/Android/.test(navigator.userAgent)) { e.preventDefault(); document.getElementById("cf").requestSubmit(); } };
+  txt.onkeydown = (e) => {
+    const first = document.querySelector("#qsug:not([hidden]) [data-qi]");
+    if (first && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) { e.preventDefault(); first.click(); return; }
+    if (e.key === "Escape") document.getElementById("qsug").hidden = true;
+    if (e.key === "Enter" && !e.shiftKey && !isIOS && !/Android/.test(navigator.userAgent)) { e.preventDefault(); document.getElementById("cf").requestSubmit(); }
+  };
   txt.onfocus = () => { document.getElementById("panel").hidden = true; };
   document.getElementById("cf").onsubmit = async (e) => {
     e.preventDefault();
     const text = txt.value.trim();
     if (!text) return;
     const quote = state.reply?.msgId;
-    txt.value = ""; txt.oninput(); setReply(null);
+    txt.value = ""; txt.oninput(); setReply(null); document.getElementById("qsug").hidden = true;
     try { await api("POST", `${tpath(r)}/text`, { text, quote }); }
     catch (err) { toast(err.message); txt.value = text; }
   };
-  document.getElementById("pic").onchange = async (e) => {
-    for (const f of e.target.files) {
-      try {
-        toast("Đang gửi ảnh…", 10000);
-        await api("POST", `${tpath(r)}/image`, await prepareImage(f));
-        toast("Đã gửi ảnh");
-      } catch (err) { toast(err.message); }
-    }
-    e.target.value = "";
-  };
-  document.getElementById("fil").onchange = async (e) => {
-    const f = e.target.files[0]; e.target.value = "";
-    if (!f) return;
+  document.getElementById("pic").onchange = (e) => { addToTray(r, [...e.target.files]); e.target.value = ""; };
+  const sendFile = async (f) => {
     if (f.size > 20 * 1048576) return toast("File tối đa 20MB");
     try {
       toast("Đang gửi file…", 30000);
@@ -350,6 +448,22 @@ async function renderChat(r) {
       await api("POST", `${tpath(r)}/file`, { data, filename: f.name });
       toast("Đã gửi file");
     } catch (err) { toast(err.message); }
+  };
+  document.getElementById("fil").onchange = (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) sendFile(f); };
+  // Dán ảnh (Ctrl+V / giữ ô nhập → Dán) và kéo thả ảnh, file vào khung chat
+  txt.onpaste = (e) => {
+    const imgs = [...(e.clipboardData?.files || [])].filter((f) => f.type.startsWith("image/"));
+    if (imgs.length && online) { e.preventDefault(); addToTray(r, imgs); }
+  };
+  const chatEl = document.getElementById("msgs");
+  chatEl.ondragover = (e) => { if (online && e.dataTransfer?.types?.includes("Files")) { e.preventDefault(); chatEl.classList.add("drop"); } };
+  chatEl.ondragleave = () => chatEl.classList.remove("drop");
+  chatEl.ondrop = (e) => {
+    chatEl.classList.remove("drop");
+    const files = [...(e.dataTransfer?.files || [])]; if (!files.length || !online) return;
+    e.preventDefault();
+    addToTray(r, files.filter((f) => f.type.startsWith("image/")));
+    files.filter((f) => !f.type.startsWith("image/")).forEach(sendFile);
   };
   document.getElementById("emo").onclick = () => togglePanel(r);
 
@@ -392,6 +506,69 @@ async function renderChat(r) {
   }, { passive: true });
   const cancel = () => { clearTimeout(press); press = null; };
   box.addEventListener("touchend", cancel); box.addEventListener("touchmove", cancel, { passive: true });
+}
+
+// ---------- tin mẫu ----------
+async function loadQuick(force) {
+  if (state.quick && !force) return state.quick;
+  try { state.quick = (await api("GET", "quick-replies")).items; } catch { state.quick ||= []; }
+  return state.quick;
+}
+function insertText(txt, text) {
+  txt.value = text; txt.focus(); txt.selectionStart = txt.selectionEnd = text.length;
+  txt.oninput();
+}
+// Gõ "/" ở đầu ô nhập: hiện tin mẫu khớp tên tắt hoặc nội dung
+function quickSuggest(txt) {
+  const box = document.getElementById("qsug"); if (!box) return;
+  const m = txt.value.match(/^\/(\S*)$/);
+  if (!m) { box.hidden = true; return; }
+  const k = unaccentJs(m[1]);
+  const items = (state.quick || []).filter((x) => unaccentJs(x.shortcut).startsWith(k) || (k && unaccentJs(x.text).includes(k))).slice(0, 8);
+  box.hidden = false;
+  box.innerHTML = items.length
+    ? items.map((x) => `<button type="button" data-qi="${x.id}"><b>/${esc(x.shortcut)}</b> <span class="muted">${esc(x.text.slice(0, 80))}</span></button>`).join("")
+    : `<div class="small muted pad">${state.quick?.length ? "Không có tin mẫu khớp." : "Chưa có tin mẫu."} <a href="#/settings" class="link">Thêm tin mẫu</a></div>`;
+  box.onclick = (e) => {
+    const b = e.target.closest("[data-qi]"); if (!b) return;
+    const q = state.quick.find((x) => x.id === Number(b.dataset.qi));
+    box.hidden = true;
+    if (q) insertText(txt, q.text);
+  };
+}
+
+// ---------- khay ảnh chờ gửi ----------
+function addToTray(r, files) {
+  const imgs = files.filter((f) => f.type.startsWith("image/"));
+  if (!imgs.length) return;
+  state.tray = (state.tray || []).concat(imgs.map((f) => ({ f, url: URL.createObjectURL(f) }))).slice(0, 30);
+  drawTray(r);
+}
+function drawTray(r) {
+  const el = document.getElementById("tray"); if (!el) return;
+  const items = state.tray || [];
+  el.hidden = !items.length;
+  if (!items.length) return;
+  el.innerHTML = `<div class="tray-imgs">${items.map((x, i) => `<div class="ti"><img src="${x.url}" alt=""><button type="button" data-rm="${i}" aria-label="Bỏ ảnh">✕</button></div>`).join("")}
+    <label class="ti add" aria-label="Thêm ảnh">＋<input type="file" accept="image/*" multiple hidden></label></div>
+    <div class="tray-bar"><button type="button" class="btn sm" data-cancel>Huỷ</button><button type="button" class="btn primary sm" data-send>Gửi ${items.length} ảnh</button></div>`;
+  el.querySelector("input").onchange = (e) => addToTray(r, [...e.target.files]);
+  el.onclick = async (e) => {
+    const rm = e.target.closest("[data-rm]");
+    if (rm) { URL.revokeObjectURL(items[rm.dataset.rm].url); items.splice(Number(rm.dataset.rm), 1); return drawTray(r); }
+    if (e.target.closest("[data-cancel]")) { items.forEach((x) => URL.revokeObjectURL(x.url)); state.tray = []; return drawTray(r); }
+    if (!e.target.closest("[data-send]")) return;
+    const list = items.splice(0); drawTray(r);
+    let ok = 0;
+    for (const [i, x] of list.entries()) {
+      try {
+        toast(list.length > 1 ? `Đang gửi ảnh ${i + 1}/${list.length}…` : "Đang gửi ảnh…", 30000);
+        await api("POST", `${tpath(r)}/image`, await prepareImage(x.f)); ok++;
+      } catch (err) { toast(err.message, 4000); }
+      URL.revokeObjectURL(x.url);
+    }
+    if (ok) toast(ok === list.length ? `Đã gửi ${ok} ảnh` : `Đã gửi ${ok}/${list.length} ảnh`);
+  };
 }
 
 function setReply(m) {
@@ -473,9 +650,21 @@ async function togglePanel(r) {
   p.hidden = false;
   document.getElementById("txt").blur();
   const tab = state.panelTab || "sticker";
-  p.innerHTML = `<div class="tabs"><button data-tab="sticker" class="${tab === "sticker" ? "on" : ""}">Sticker</button><button data-tab="emoji" class="${tab === "emoji" ? "on" : ""}">Emoji</button></div><div id="pbody" class="pbody"></div>`;
+  p.innerHTML = `<div class="tabs"><button data-tab="sticker" class="${tab === "sticker" ? "on" : ""}">Sticker</button><button data-tab="emoji" class="${tab === "emoji" ? "on" : ""}">Emoji</button><button data-tab="quick" class="${tab === "quick" ? "on" : ""}">Tin mẫu</button></div><div id="pbody" class="pbody"></div>`;
   p.querySelectorAll("[data-tab]").forEach((b) => b.onclick = () => { state.panelTab = b.dataset.tab; p.hidden = true; togglePanel(r); });
   const body = p.querySelector("#pbody");
+  if (tab === "quick") {
+    const items = await loadQuick();
+    body.innerHTML = `<div class="quick-list">${items.map((x) => `<button type="button" data-qi="${x.id}"><b>/${esc(x.shortcut)}</b><span>${esc(x.text)}</span></button>`).join("")}</div>
+      <p class="small muted">${items.length ? "Mẹo: gõ <b>/</b> + tên tắt trong ô nhập để chèn nhanh." : "Chưa có tin mẫu."} <a class="link" href="#/settings">Quản lý tin mẫu</a></p>`;
+    body.onclick = (e) => {
+      const b = e.target.closest("[data-qi]"); if (!b) return;
+      const q = items.find((x) => x.id === Number(b.dataset.qi));
+      p.hidden = true;
+      if (q) insertText(document.getElementById("txt"), q.text);
+    };
+    return;
+  }
   if (tab === "emoji") {
     body.innerHTML = `<div class="emoji-grid">${EMOJIS.map((e) => `<button type="button">${e}</button>`).join("")}</div>`;
     body.onclick = (e) => {
@@ -535,6 +724,53 @@ function bubble(m, type) {
 }
 const linkify = (s) => s.replace(/https?:\/\/[^\s<]+/g, (u) => `<a href="${u}" target="_blank" rel="noopener noreferrer">${u}</a>`).replace(/\n/g, "<br>");
 function scrollBottom() { const b = document.getElementById("msgs"); if (b) b.scrollTop = b.scrollHeight; }
+
+// ---------- ảnh, file, link & tìm trong một hội thoại ----------
+const GTABS = [["media", "Ảnh/Video"], ["file", "File"], ["link", "Link"], ["search", "Tìm tin"]];
+async function renderGallery(r, q = "") {
+  const tab = state.galleryTab || "media";
+  const t = (state.threadsAcc === r.acc && state.threads.find((x) => x.threadId === r.tid && x.type === r.type)) || {};
+  const back = chatHash(r.acc, r.type, r.tid);
+  let items = [];
+  if (tab !== "search") items = (await api("GET", `${tpath(r)}/gallery?kind=${tab}`)).items;
+  else if (q.trim().length >= 2) items = (await api("GET", `search?acc=${r.acc}&type=${r.type}&tid=${encodeURIComponent(r.tid)}&q=${encodeURIComponent(q.trim())}`)).results;
+  const date = (ts) => new Date(ts).toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" });
+  let body;
+  if (tab === "media") body = items.length ? `<div class="gallery">${items.map((m) => m.kind === "video"
+      ? `<a class="gi vid" href="${chatHash(r.acc, r.type, r.tid, m.msgId)}">${m.thumb ? `<img src="${safeUrl(m.thumb)}" referrerpolicy="no-referrer" loading="lazy" alt="">` : ""}<span>▶</span></a>`
+      : `<button class="gi" data-full="${mediaSrc(m, m.url || m.thumb)}" data-mid="${esc(m.msgId)}"><img src="${mediaSrc(m, m.thumb || m.url)}" referrerpolicy="no-referrer" loading="lazy" alt=""></button>`).join("")}</div>`
+    : `<p class="center muted">Chưa có ảnh, video nào trong hội thoại này.</p>`;
+  else if (tab === "file" || tab === "link") body = items.length ? `<ul class="list">${items.map((m) => `<li class="row">
+      <span class="big-ico">${tab === "link" ? "🔗" : m.kind === "voice" ? "🎤" : "📎"}</span>
+      <a class="grow" href="${tab === "link" ? safeUrl(m.url) : mediaSrc(m, m.url)}" target="_blank" rel="noopener noreferrer">
+        <div class="name ell">${esc(m.title || (m.kind === "voice" ? "Tin nhắn thoại" : m.url) || "Tệp")}</div>
+        <div class="sub">${esc(m.isSelf ? "Bạn" : m.fromName || "")} · ${date(m.ts)}${m.media ? " · đã lưu" : ""}</div></a>
+      <a class="icon-btn" href="${chatHash(r.acc, r.type, r.tid, m.msgId)}" aria-label="Đi tới tin nhắn">💬</a></li>`).join("")}</ul>`
+    : `<p class="center muted">Chưa có ${tab === "link" ? "link" : "file"} nào.</p>`;
+  else body = `<ul class="list">${items.map((m) => `<li><a class="row" href="${chatHash(r.acc, r.type, r.tid, m.msgId)}">
+      <div class="grow"><div class="sub">${esc(m.isSelf ? "Bạn" : m.fromName || "")} · ${date(m.ts)}</div><div>${esc(emoticons(hitText(m)))}</div></div></a></li>`).join("")}</ul>
+    ${q.trim().length >= 2 && !items.length ? `<p class="center muted">Không tìm thấy “${esc(q)}”.</p>` : ""}
+    ${q.trim().length < 2 ? `<p class="center muted small">Nhập ít nhất 2 ký tự. Tìm được cả khi gõ không dấu.</p>` : ""}`;
+  $app.innerHTML = `
+  ${header(esc(t.name || "Hội thoại"), { back })}
+  <div class="tabs">${GTABS.map(([k, n]) => `<button data-g="${k}" class="${tab === k ? "on" : ""}">${n}</button>`).join("")}</div>
+  ${tab === "search" ? `<div class="search"><input id="gq" type="search" placeholder="Tìm trong hội thoại này" value="${esc(q)}"></div>` : ""}
+  <main class="scroll">${body}
+    ${tab !== "search" && items.length >= 90 ? `<p class="center muted small">Đang hiện 90 mục gần nhất.</p>` : ""}</main>`;
+  document.querySelectorAll("[data-g]").forEach((b) => b.onclick = () => { state.galleryTab = b.dataset.g; renderGallery(r); });
+  const gq = document.getElementById("gq");
+  if (gq) {
+    if (q || tab === "search") { gq.focus(); gq.setSelectionRange(q.length, q.length); }
+    gq.oninput = () => { clearTimeout(renderGallery.t); renderGallery.t = setTimeout(() => renderGallery(r, gq.value), 350); };
+  }
+  document.querySelector(".gallery")?.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-full]"); if (!b) return;
+    const v = document.createElement("div"); v.className = "viewer";
+    v.innerHTML = `<img src="${b.dataset.full}" referrerpolicy="no-referrer" alt=""><a class="btn viewer-go" href="${chatHash(r.acc, r.type, r.tid, b.dataset.mid)}">💬 Đi tới tin nhắn</a>`;
+    v.onclick = () => v.remove();
+    document.body.appendChild(v);
+  });
+}
 
 // ---------- trang cá nhân / thông tin nhóm ----------
 const GENDER = { 0: "Nam", 1: "Nữ" };
@@ -629,6 +865,14 @@ async function renderSettings() {
       <label class="toggle"><input type="checkbox" data-pref="app_badge" ${pf.app_badge !== false ? "checked" : ""}> Hiện số tin chưa đọc trên icon app</label>
       <p class="muted small">Tắt thông báo riêng từng tài khoản Zalo hoặc từng hội thoại: bấm nút ⋯ ở góc trên của tài khoản / hội thoại đó.</p>
     </section>
+    <section class="card"><h3>Tin mẫu (trả lời nhanh)</h3>
+      <p class="muted small">Câu hay gửi (báo giá, số tài khoản, địa chỉ…). Khi chat, gõ <b>/</b> + tên tắt hoặc bấm 😊 → <b>Tin mẫu</b>.</p>
+      <ul class="list quick-admin" id="qlist"></ul>
+      <form id="qform"><input type="hidden" name="id">
+        <input name="shortcut" placeholder="Tên tắt, vd: baogia" maxlength="30" required>
+        <textarea name="text" rows="3" placeholder="Nội dung tin" maxlength="5000" required></textarea>
+        <button class="btn primary" id="qsave">Thêm tin mẫu</button> <button type="button" class="btn" id="qnew" hidden>Huỷ sửa</button></form>
+    </section>
     ${state.user.is_admin ? `<a class="btn block" href="#/admin">🛠 Trang quản trị (người dùng, mã mời, tính năng)</a>` : ""}
     <section class="card"><h3>Đổi mật khẩu</h3>
       <form id="pw"><input name="current" type="password" placeholder="Mật khẩu hiện tại" autocomplete="current-password" required>
@@ -655,6 +899,30 @@ async function renderSettings() {
     try { await api("POST", "password", Object.fromEntries(new FormData(e.target))); toast("Đã đổi mật khẩu"); e.target.reset(); } catch (err) { toast(err.message); }
   };
   document.getElementById("logout").onclick = logout;
+  const qf = document.getElementById("qform"), qid = qf.querySelector("[name=id]");
+  const resetQ = () => { qf.reset(); qid.value = ""; document.getElementById("qsave").textContent = "Thêm tin mẫu"; document.getElementById("qnew").hidden = true; };
+  const drawQ = (items) => {
+    state.quick = items;
+    document.getElementById("qlist").innerHTML = items.map((x) => `<li class="row"><div class="grow"><b>/${esc(x.shortcut)}</b><div class="sub pre">${esc(x.text)}</div></div>
+      <button class="icon-btn" data-qe="${x.id}" aria-label="Sửa">✎</button><button class="icon-btn" data-qd="${x.id}" aria-label="Xoá">🗑</button></li>`).join("")
+      || `<li class="muted small">Chưa có tin mẫu nào.</li>`;
+  };
+  loadQuick(true).then(drawQ);
+  document.getElementById("qlist").onclick = async (e) => {
+    const ed = e.target.closest("[data-qe]"), del = e.target.closest("[data-qd]");
+    if (ed) {
+      const x = state.quick.find((q) => q.id === Number(ed.dataset.qe));
+      qid.value = x.id; qf.shortcut.value = x.shortcut; qf.text.value = x.text;
+      document.getElementById("qsave").textContent = "Lưu thay đổi"; document.getElementById("qnew").hidden = false; qf.text.focus();
+    }
+    if (del && confirm("Xoá tin mẫu này?")) drawQ((await api("DELETE", `quick-replies/${del.dataset.qd}`)).items);
+  };
+  document.getElementById("qnew").onclick = resetQ;
+  qf.onsubmit = async (e) => {
+    e.preventDefault();
+    try { drawQ((await api("POST", "quick-replies", Object.fromEntries(new FormData(qf)))).items); resetQ(); toast("Đã lưu tin mẫu"); }
+    catch (err) { toast(err.message); }
+  };
 }
 
 // Đăng xuất khỏi app (các tài khoản Zalo vẫn chạy trên server, đăng nhập lại là thấy)
@@ -803,13 +1071,14 @@ function startEvents() {
         clearTimeout(startEvents.c); startEvents.c = setTimeout(() => state.route?.name === "chat" && renderChat(state.route), 800);
         return;
       }
+      if (state.gap) return; // đang xem tin cũ (từ kết quả tìm): đã có nút "Xem tin mới nhất"
       state.messages.push(m);
       const box = document.getElementById("msgs");
       const atBottom = box && box.scrollHeight - box.scrollTop - box.clientHeight < 120;
       document.getElementById("mlist")?.insertAdjacentHTML("beforeend", bubble(m, m.type));
       if (atBottom || m.isSelf) scrollBottom();
       api("GET", `accounts/${m.accountId}/threads/${m.type}/${encodeURIComponent(m.threadId)}/messages?before=1`).catch(() => {}); // đánh dấu đã đọc
-    } else if (r?.name === "threads" || r?.name === "home") {
+    } else if (r?.name === "threads" || r?.name === "home" || r?.name === "inbox") {
       clearTimeout(startEvents.t); startEvents.t = setTimeout(render, 300);
     } else if (r?.name === "chat") {
       const a = state.accounts.find((x) => x.id === m.accountId); if (a && !m.isSelf) a.unread++;

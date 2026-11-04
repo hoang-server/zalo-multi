@@ -112,9 +112,24 @@ route("DELETE", "/api/accounts/:id", (req, res, { user, p }) => { zalo.removeAcc
 route("POST", "/api/accounts/:id/reconnect", (req, res, { user, p }) => { zalo.reconnect(user, p.id); send(res, 200, { ok: true }); });
 route("POST", "/api/accounts/:id/sync", async (req, res, { user, p }) => send(res, 200, await zalo.syncContacts(user, p.id)));
 route("GET", "/api/accounts/:id/threads", (req, res, { user, p, url }) =>
-  send(res, 200, { threads: zalo.listThreads(user, p.id, (url.searchParams.get("q") || "").slice(0, 100)) }));
+  send(res, 200, { threads: zalo.listThreads(user, p.id, (url.searchParams.get("q") || "").slice(0, 100), url.searchParams.get("f")) }));
 route("GET", "/api/accounts/:id/threads/:type/:tid/messages", (req, res, { user, p, url }) =>
-  send(res, 200, { messages: zalo.listMessages(user, p.id, p.type, p.tid, url.searchParams.get("before")) }));
+  send(res, 200, { messages: zalo.listMessages(user, p.id, p.type, p.tid, url.searchParams.get("before"),
+    { after: url.searchParams.get("after"), around: url.searchParams.get("around") }) }));
+route("POST", "/api/accounts/:id/threads/:type/:tid/pin", async (req, res, { user, p }) => {
+  zalo.setThreadPinned(user, p.id, p.type, p.tid, (await readJson(req)).pinned); send(res, 200, { ok: true });
+});
+route("GET", "/api/accounts/:id/threads/:type/:tid/gallery", (req, res, { user, p, url }) =>
+  send(res, 200, { items: zalo.gallery(user, p.id, p.type, p.tid, url.searchParams.get("kind"), url.searchParams.get("before")) }));
+route("GET", "/api/inbox", (req, res, { user, url }) => send(res, 200, { threads: zalo.inbox(user, url.searchParams.get("f")) }));
+route("GET", "/api/search", (req, res, { user, url }) => {
+  const s = url.searchParams;
+  send(res, 200, { results: zalo.searchMessages(user, s.get("acc"), (s.get("q") || "").slice(0, 100),
+    s.get("tid") ? { type: s.get("type"), threadId: s.get("tid") } : {}) });
+});
+route("GET", "/api/quick-replies", (req, res, { user }) => send(res, 200, { items: zalo.listQuickReplies(user) }));
+route("POST", "/api/quick-replies", async (req, res, { user }) => send(res, 200, { items: zalo.saveQuickReply(user, await readJson(req)) }));
+route("DELETE", "/api/quick-replies/:qid", (req, res, { user, p }) => send(res, 200, { items: zalo.deleteQuickReply(user, p.qid) }));
 route("POST", "/api/accounts/:id/threads/:type/:tid/history", async (req, res, { user, p }) =>
   send(res, 200, await zalo.fetchHistory(user, p.id, p.type, p.tid)));
 route("POST", "/api/accounts/:id/threads/:type/:tid/text", async (req, res, { user, p }) => {

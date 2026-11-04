@@ -108,6 +108,19 @@ db.exec(`CREATE TABLE IF NOT EXISTS reactions (
   PRIMARY KEY (account_id, msg_id, uid)
 )`);
 
+addColumn("threads", "pinned INTEGER NOT NULL DEFAULT 0");   // thời điểm ghim (0 = không ghim)
+db.exec(`CREATE TABLE IF NOT EXISTS quick_replies (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  shortcut TEXT NOT NULL,
+  text TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+)`);
+
+// Tìm kiếm không dấu, không phân biệt hoa thường: unaccent('Xin Chào') = 'xin chao'
+export const unaccent = (s) => String(s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D").toLowerCase();
+db.function("unaccent", { deterministic: true }, (s) => (s == null ? null : unaccent(s)));
+
 // Cài đặt chung do quản trị viên chỉnh (giá trị mặc định ở đây; thêm tính năng mới chỉ cần thêm khoá)
 export const SETTING_DEFAULTS = {
   open_signup: OPEN_SIGNUP,  // cho đăng ký không cần mã mời

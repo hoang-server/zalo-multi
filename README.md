@@ -10,9 +10,13 @@ Bản chạy thử: <https://nguyenhuyhoang.website/app/>
 
 - Nhiều người dùng, mỗi người quản lý các tài khoản Zalo của mình (đăng ký bằng mã mời)
 - Thêm tài khoản Zalo bằng cách quét mã QR
-- Danh sách hội thoại cá nhân và nhóm, tìm kiếm, tải danh bạ & nhóm
+- Danh sách hội thoại cá nhân và nhóm, lọc *Chưa đọc / Cá nhân / Nhóm*, ghim hội thoại lên đầu (giữ lâu hoặc chuột phải), tải danh bạ & nhóm
+- **Hộp thư chung**: tin của mọi tài khoản Zalo trong một danh sách
+- Tìm trong nội dung tin nhắn (gõ không dấu cũng được) ở từng tài khoản, mọi tài khoản hoặc một hội thoại, bấm kết quả để nhảy tới đúng tin
+- **Tin mẫu**: lưu câu hay gửi, khi chat gõ `/` + tên tắt hoặc chọn ở 😊 → *Tin mẫu*
+- Xem ảnh/video, file, link đã gửi trong từng hội thoại
 - Đọc / trả lời tin nhắn chữ, xem ảnh, sticker, icon cảm xúc Zalo, file, video, tin thoại, liên kết
-- Gửi ảnh, file (≤ 20MB), sticker (tìm theo từ khoá, sticker dùng gần đây), emoji
+- Gửi nhiều ảnh một lần (xem trước, bỏ bớt), dán ảnh bằng Ctrl+V, kéo thả ảnh/file vào khung chat; gửi file (≤ 20MB), sticker (tìm theo từ khoá, sticker dùng gần đây), emoji
 - Thả cảm xúc (giữ lâu vào tin hoặc bấm ⋯), trả lời trích dẫn, thu hồi, xoá phía mình, sao chép
 - Hiện "đang soạn tin…", báo đã xem cho người gửi
 - Xem trang cá nhân (ảnh bìa, giới thiệu, ngày sinh…), thông tin nhóm & danh sách thành viên, thông tin tài khoản của mình

@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { Zalo, ThreadType, LoginQRCallbackEventType, Reactions } from "zca-js";
-import { db, encrypt, decrypt, now, getSetting } from "./db.js";
+import { db, encrypt, decrypt, now, getSetting, unaccent } from "./db.js";
 import { saveMedia, removeMediaOfAccount } from "./media.js";
 import { emit, pushToUser } from "./push.js";
 import { httpError } from "./auth.js";
@@ -375,21 +375,63 @@ export function reconnect(user, accountId) {
   connect(row.id).catch(() => {});
 }
 
-export function listThreads(user, accountId, q = "") {
+// Bộ lọc danh sách hội thoại: all | unread | user | group
+const THREAD_FILTER = { unread: "AND t.unread > 0", user: "AND t.type = 0", group: "AND t.type = 1" };
+const likeArg = (q) => `%${unaccent(q).replace(/[\\%_]/g, "\\$&")}%`;
+
+export function listThreads(user, accountId, q = "", filter = "all") {
   const row = ownAccount(user, accountId);
   return db.prepare(
-    `SELECT thread_id threadId, type, name, avatar, last_ts lastTs, last_text lastText, unread, muted
-     FROM threads WHERE account_id = ? AND (? = '' OR name LIKE ?) ORDER BY last_ts DESC LIMIT 300`
-  ).all(row.id, q, `%${q}%`);
+    `SELECT thread_id threadId, type, name, avatar, last_ts lastTs, last_text lastText, unread, muted, pinned
+     FROM threads t WHERE account_id = ? AND (? = '' OR unaccent(name) LIKE ? ESCAPE '\\') ${THREAD_FILTER[filter] || ""}
+     ORDER BY pinned > 0 DESC, pinned DESC, last_ts DESC LIMIT 300`
+  ).all(row.id, q, likeArg(q));
 }
 
-export function listMessages(user, accountId, type, threadId, before) {
+// Hộp thư chung: hội thoại của mọi tài khoản Zalo của người dùng, mới nhất lên đầu
+export function inbox(user, filter = "all") {
+  return db.prepare(
+    `SELECT t.account_id accountId, a.name accountName, a.avatar accountAvatar, t.thread_id threadId, t.type, t.name, t.avatar,
+            t.last_ts lastTs, t.last_text lastText, t.unread, t.muted, t.pinned
+     FROM threads t JOIN zalo_accounts a ON a.id = t.account_id
+     WHERE a.user_id = ? AND t.last_ts > 0 ${THREAD_FILTER[filter] || ""}
+     ORDER BY t.last_ts DESC LIMIT 200`
+  ).all(user.id);
+}
+
+export function setThreadPinned(user, accountId, type, threadId, pinned) {
   const row = ownAccount(user, accountId);
-  const rows = db.prepare(
-    `SELECT id, msg_id msgId, from_uid fromUid, from_name fromName, ts, is_self isSelf, kind, text, url, thumb, title, media, quote, recalled
-     FROM messages WHERE account_id = ? AND type = ? AND thread_id = ? AND ts < ?
-     ORDER BY ts DESC LIMIT 60`
-  ).all(row.id, Number(type), String(threadId), Number(before) || 9e15);
+  db.prepare("UPDATE threads SET pinned = ? WHERE account_id = ? AND type = ? AND thread_id = ?").run(pinned ? now() : 0, row.id, Number(type), String(threadId));
+}
+
+// Tìm trong nội dung tin đã lưu (chữ, tên file, tiêu đề link); accountId trống = mọi tài khoản
+export function searchMessages(user, accountId, q, { type, threadId } = {}) {
+  q = String(q || "").trim();
+  if (q.length < 2) return [];
+  const acc = accountId ? ownAccount(user, accountId).id : null;
+  return db.prepare(
+    `SELECT m.id, m.msg_id msgId, m.account_id accountId, a.name accountName, m.thread_id threadId, m.type, t.name threadName, t.avatar,
+            m.from_name fromName, m.is_self isSelf, m.ts, m.kind, m.text, m.title
+     FROM messages m JOIN zalo_accounts a ON a.id = m.account_id
+     LEFT JOIN threads t ON t.account_id = m.account_id AND t.thread_id = m.thread_id AND t.type = m.type
+     WHERE a.user_id = ? AND (? IS NULL OR m.account_id = ?) AND (? IS NULL OR (m.type = ? AND m.thread_id = ?)) AND m.recalled = 0
+       AND (unaccent(m.text) LIKE ? ESCAPE '\\' OR unaccent(m.title) LIKE ? ESCAPE '\\')
+     ORDER BY m.ts DESC LIMIT 80`
+  ).all(user.id, acc, acc, threadId == null ? null : 1, Number(type), String(threadId ?? ""), likeArg(q), likeArg(q));
+}
+
+const MSG_COLS = "id, msg_id msgId, from_uid fromUid, from_name fromName, ts, is_self isSelf, kind, text, url, thumb, title, media, quote, recalled";
+// before: tin cũ hơn mốc; after: tin mới hơn mốc; around: msgId cần nhảy tới (lấy tin quanh nó)
+export function listMessages(user, accountId, type, threadId, before, { after, around } = {}) {
+  const row = ownAccount(user, accountId);
+  const args = [row.id, Number(type), String(threadId)];
+  const page = (cond, val, dir, n) => db.prepare(
+    `SELECT ${MSG_COLS} FROM messages WHERE account_id = ? AND type = ? AND thread_id = ? AND ts ${cond} ? ORDER BY ts ${dir} LIMIT ${n}`).all(...args, val);
+  let rows;
+  const target = around && db.prepare("SELECT ts FROM messages WHERE account_id = ? AND type = ? AND thread_id = ? AND msg_id = ?").get(...args, String(around));
+  if (target) rows = page("<=", target.ts, "DESC", 40).concat(page(">", target.ts, "ASC", 30).reverse()).sort((a, b) => b.ts - a.ts);
+  else if (after) rows = page(">", Number(after), "ASC", 60).reverse();
+  else rows = page("<", Number(before) || 9e15, "DESC", 60);
   const wasUnread = db.prepare("SELECT unread FROM threads WHERE account_id = ? AND type = ? AND thread_id = ?").get(row.id, Number(type), String(threadId))?.unread;
   db.prepare("UPDATE threads SET unread = 0 WHERE account_id = ? AND type = ? AND thread_id = ?").run(row.id, Number(type), String(threadId));
   const react = db.prepare("SELECT uid, icon, name FROM reactions WHERE account_id = ? AND msg_id = ?");
@@ -398,7 +440,7 @@ export function listMessages(user, accountId, type, threadId, before) {
     m.reactions = react.all(row.id, m.msgId);
     if (m.recalled) Object.assign(m, { kind: "recalled", text: null, url: null, thumb: null, media: null });
   }
-  if (wasUnread && !before) sendSeen(row.id, Number(type), String(threadId));
+  if (wasUnread && !before && !around) sendSeen(row.id, Number(type), String(threadId));
   return rows.reverse();
 }
 
@@ -492,6 +534,37 @@ export function startAccountsOfUser(userId) {
   for (const r of db.prepare("SELECT id FROM zalo_accounts WHERE user_id = ?").all(userId)) connect(r.id).catch(() => {});
 }
 export const liveCount = () => live.size;
+
+// Thư viện của hội thoại: ảnh/video, file, link
+const GALLERY = { media: "('image','video')", file: "('file','voice')", link: "('link')" };
+export function gallery(user, accountId, type, threadId, kind = "media", before) {
+  const row = ownAccount(user, accountId);
+  return db.prepare(
+    `SELECT ${MSG_COLS} FROM messages WHERE account_id = ? AND type = ? AND thread_id = ? AND recalled = 0
+       AND kind IN ${GALLERY[kind] || GALLERY.media} AND ts < ? ORDER BY ts DESC LIMIT 90`
+  ).all(row.id, Number(type), String(threadId), Number(before) || 9e15);
+}
+
+// ---------- Tin mẫu (trả lời nhanh) ----------
+export const listQuickReplies = (user) =>
+  db.prepare("SELECT id, shortcut, text FROM quick_replies WHERE user_id = ? ORDER BY shortcut").all(user.id);
+export function saveQuickReply(user, { id, shortcut, text }) {
+  shortcut = String(shortcut || "").trim().replace(/^\//, "").replace(/\s+/g, "-").slice(0, 30);
+  text = String(text || "").trim().slice(0, 5000);
+  if (!shortcut || !text) throw httpError(400, "Cần có tên tắt và nội dung");
+  if (id) {
+    const r = db.prepare("UPDATE quick_replies SET shortcut = ?, text = ? WHERE id = ? AND user_id = ?").run(shortcut, text, Number(id), user.id);
+    if (!r.changes) throw httpError(404, "Không tìm thấy tin mẫu");
+  } else {
+    if (db.prepare("SELECT COUNT(*) n FROM quick_replies WHERE user_id = ?").get(user.id).n >= 200) throw httpError(400, "Tối đa 200 tin mẫu");
+    db.prepare("INSERT INTO quick_replies (user_id, shortcut, text, created_at) VALUES (?, ?, ?, ?)").run(user.id, shortcut, text, now());
+  }
+  return listQuickReplies(user);
+}
+export function deleteQuickReply(user, id) {
+  db.prepare("DELETE FROM quick_replies WHERE id = ? AND user_id = ?").run(Number(id), user.id);
+  return listQuickReplies(user);
+}
 
 export function mediaRow(user, messageId) {
   return db.prepare(
