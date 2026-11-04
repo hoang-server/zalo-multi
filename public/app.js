@@ -81,9 +81,13 @@ async function render() {
     if (r.name === "admin") return renderAdmin();
     await loadAccounts();
     if (r.name === "home") {
-      if (state.accounts.length === 1 && !sessionStorage.getItem("stayHome")) return go(`#/a/${state.accounts[0].id}`);
+      // Chỉ tự mở thẳng tài khoản duy nhất khi vừa mở app; bấm ‹ quay lại thì ở lại màn hình chính
+      const auto = !state.opened && state.accounts.length === 1;
+      state.opened = true;
+      if (auto) return go(`#/a/${state.accounts[0].id}`);
       return renderHome();
     }
+    state.opened = true;
     if (r.name === "threads") return renderThreads(r.acc);
     if (r.name === "chat") return renderChat(r);
     if (r.name === "profile") return renderProfile(r);
@@ -139,7 +143,6 @@ function installHint() {
 }
 
 function renderHome() {
-  sessionStorage.removeItem("stayHome");
   $app.innerHTML = `
   ${header("Tài khoản Zalo", { right: `<a class="icon-btn" href="#/settings" aria-label="Cài đặt">⚙︎</a>` })}
   <main class="scroll">
@@ -155,9 +158,11 @@ function renderHome() {
     </ul>
     ${state.accounts.length ? "" : `<p class="center muted">Chưa có tài khoản Zalo nào.<br>Bấm nút bên dưới và quét mã QR bằng app Zalo trên điện thoại khác hoặc máy này.</p>`}
     <div class="pad"><button class="btn primary block" id="add">＋ Thêm tài khoản Zalo</button></div>
+    <div class="pad"><button class="btn block" id="logout">🚪 Đăng xuất khỏi app (${esc(state.user.username)})</button></div>
     <p class="muted small pad">Lưu ý: Zalo chỉ cho một phiên Zalo Web cùng lúc cho mỗi tài khoản. Nếu mở chat.zalo.me ở nơi khác, tài khoản sẽ bị ngắt ở đây.</p>
   </main>`;
   document.getElementById("add").onclick = startQr;
+  document.getElementById("logout").onclick = logout;
   bindInstall(); bindPush();
 }
 
@@ -175,7 +180,7 @@ async function renderThreads(accId, q = state.q || "") {
   state.threads = (await api("GET", `accounts/${accId}/threads?q=${encodeURIComponent(q)}`)).threads;
   const keepFocus = document.activeElement?.id === "q";
   $app.innerHTML = `
-  ${header(esc(acc.name), { back: "#/", right: `<button class="icon-btn" id="menu" aria-label="Tuỳ chọn">⋯</button>` })}
+  ${header(esc(acc.name), { back: "#/", right: `<a class="icon-btn" href="#/settings" aria-label="Cài đặt">⚙︎</a><button class="icon-btn" id="menu" aria-label="Tuỳ chọn">⋯</button>` })}
   ${accountSwitcher(accId)}
   ${acc.status !== "online" ? `<div class="warn">${esc(acc.statusMsg || statusText[acc.status])}
      ${["kicked", "offline", "reconnecting"].includes(acc.status) ? `<button class="btn sm" id="rc">Kết nối lại</button>` : ""}
@@ -214,6 +219,9 @@ async function renderThreads(accId, q = state.q || "") {
       if (!confirm(`Xoá ${acc.name} khỏi app? Tin nhắn đã lưu trong app cũng bị xoá (không ảnh hưởng Zalo).`)) return;
       await api("DELETE", `accounts/${accId}`); go("#/");
     }, "danger"],
+    ["🏠 Danh sách tài khoản Zalo", () => go("#/")],
+    ["⚙︎ Cài đặt", () => go("#/settings")],
+    ["🚪 Đăng xuất khỏi app", logout],
   ]);
 }
 
@@ -249,7 +257,7 @@ async function startQr() {
       const box = el.querySelector("#qrbox"), msg = el.querySelector("#qrmsg");
       if (d.event === "code") box.innerHTML = `<img src="data:image/png;base64,${d.image.replace(/^data:image\/png;base64,/, "")}" alt="Mã QR đăng nhập Zalo">`;
       if (d.event === "scanned") { box.innerHTML = `${avatar(d.avatar, d.name, "lg")}`; msg.textContent = `${d.name}: hãy bấm "Đăng nhập" trên điện thoại.`; }
-      if (d.event === "success") { key = null; el.remove(); state.qr = null; toast(`Đã thêm ${d.account.name}`); sessionStorage.setItem("stayHome", "1"); go(`#/a/${d.account.id}`); }
+      if (d.event === "success") { key = null; el.remove(); state.qr = null; toast(`Đã thêm ${d.account.name}`); go(`#/a/${d.account.id}`); }
       if (["declined", "expired", "error"].includes(d.event)) { key = null; box.innerHTML = "⚠️"; msg.textContent = d.message; }
     },
   };
@@ -627,7 +635,7 @@ async function renderSettings() {
       <input name="password" type="password" placeholder="Mật khẩu mới (≥ 8 ký tự)" autocomplete="new-password" required minlength="8">
       <button class="btn">Đổi</button></form>
     </section>
-    <button class="btn danger block" id="logout">Đăng xuất</button>
+    <button class="btn danger block" id="logout">🚪 Đăng xuất khỏi app</button>
     <p class="muted small center">Mã nguồn: <a href="https://github.com/hoang-server/zalo-multi" target="_blank" rel="noopener">github.com/hoang-server/zalo-multi</a></p>
   </main>`;
   bindInstall();
@@ -646,7 +654,17 @@ async function renderSettings() {
     e.preventDefault();
     try { await api("POST", "password", Object.fromEntries(new FormData(e.target))); toast("Đã đổi mật khẩu"); e.target.reset(); } catch (err) { toast(err.message); }
   };
-  document.getElementById("logout").onclick = async () => { await disablePush().catch(() => {}); await api("POST", "logout"); state.user = null; go("#/login"); };
+  document.getElementById("logout").onclick = logout;
+}
+
+// Đăng xuất khỏi app (các tài khoản Zalo vẫn chạy trên server, đăng nhập lại là thấy)
+async function logout() {
+  if (!confirm("Đăng xuất khỏi app trên máy này? Máy này sẽ không nhận thông báo nữa cho tới khi đăng nhập lại.")) return;
+  await disablePush().catch(() => {});
+  await api("POST", "logout").catch(() => {});
+  Object.assign(state, { user: null, accounts: [], threads: [], messages: [], opened: false });
+  setBadge(0);
+  go("#/login");
 }
 
 // ---------- quản trị ----------
