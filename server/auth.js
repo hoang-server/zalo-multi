@@ -1,13 +1,13 @@
 import crypto from "node:crypto";
-import { db, now } from "./db.js";
-import { BASE_PATH, OPEN_SIGNUP, SETUP_CODE } from "./config.js";
+import { db, now, getSetting } from "./db.js";
+import { BASE_PATH, SETUP_CODE } from "./config.js";
 
 const COOKIE = "zm_sid";
 const SESSION_DAYS = 60;
 
 const sha256 = (s) => crypto.createHash("sha256").update(s).digest("hex");
 
-function hashPassword(pw) {
+export function hashPassword(pw) {
   const salt = crypto.randomBytes(16);
   const key = crypto.scryptSync(pw, salt, 64, { N: 16384, r: 8, p: 1 });
   return `scrypt$${salt.toString("base64")}$${key.toString("base64")}`;
@@ -50,10 +50,14 @@ export function currentUser(req) {
   const token = parseCookies(req.headers.cookie)[COOKIE];
   if (!token) return null;
   const row = db.prepare(
-    `SELECT u.id, u.username, u.is_admin FROM sessions s JOIN users u ON u.id = s.user_id
-     WHERE s.token_hash = ? AND s.expires_at > ?`
+    `SELECT u.id, u.username, u.is_admin, u.prefs, u.last_seen FROM sessions s JOIN users u ON u.id = s.user_id
+     WHERE s.token_hash = ? AND s.expires_at > ? AND u.disabled = 0`
   ).get(sha256(token), now());
-  return row || null;
+  if (!row) return null;
+  if (!row.last_seen || now() - row.last_seen > 300e3) db.prepare("UPDATE users SET last_seen = ? WHERE id = ?").run(now(), row.id);
+  const { prefs, last_seen, ...user } = row;
+  user.prefs = { ...PREF_DEFAULTS, ...JSON.parse(prefs || "{}") };
+  return user;
 }
 
 function startSession(res, userId) {
@@ -70,7 +74,7 @@ export const noUsers = () => db.prepare("SELECT COUNT(*) n FROM users").get().n 
 
 export function needsInvite() {
   const count = db.prepare("SELECT COUNT(*) n FROM users").get().n;
-  return count === 0 ? !!SETUP_CODE : !OPEN_SIGNUP;
+  return count === 0 ? !!SETUP_CODE : !getSetting("open_signup");
 }
 
 export function register(req, res, { username, password, invite }) {
@@ -79,7 +83,7 @@ export function register(req, res, { username, password, invite }) {
   const first = db.prepare("SELECT COUNT(*) n FROM users").get().n === 0;
   let inviteRow = null;
   if (first && SETUP_CODE && String(invite || "").trim() !== SETUP_CODE) throw httpError(403, "Mã khởi tạo không đúng");
-  if (!first && !OPEN_SIGNUP) {
+  if (!first && !getSetting("open_signup")) {
     inviteRow = db.prepare("SELECT code FROM invites WHERE code = ? AND used_by IS NULL").get(String(invite || "").trim());
     if (!inviteRow) throw httpError(403, "Mã mời không đúng hoặc đã dùng");
   }
@@ -99,6 +103,7 @@ export function login(req, res, { username, password }, ip) {
     recordFailure(ip);
     throw httpError(401, "Sai tên đăng nhập hoặc mật khẩu");
   }
+  if (u.disabled) throw httpError(403, "Tài khoản đã bị khoá. Liên hệ quản trị viên.");
   failures.delete(ip);
   startSession(res, u.id);
   return { id: u.id, username: u.username, is_admin: u.is_admin };
@@ -115,6 +120,18 @@ export function changePassword(user, { current, password }) {
   if (!verifyPassword(String(current || ""), u.pass_hash)) throw httpError(401, "Mật khẩu hiện tại không đúng");
   if (!validPassword(password)) throw httpError(400, "Mật khẩu tối thiểu 8 ký tự");
   db.prepare("UPDATE users SET pass_hash = ? WHERE id = ?").run(hashPassword(password), user.id);
+}
+
+// Tuỳ chọn riêng của từng người dùng
+export const PREF_DEFAULTS = {
+  push_preview: true,   // hiện nội dung tin trong thông báo
+  app_badge: true,      // hiện số tin chưa đọc trên icon app
+};
+export function setPrefs(user, patch) {
+  const prefs = { ...user.prefs };
+  for (const [k, v] of Object.entries(patch || {})) if (k in PREF_DEFAULTS) prefs[k] = typeof PREF_DEFAULTS[k] === "boolean" ? !!v : v;
+  db.prepare("UPDATE users SET prefs = ? WHERE id = ?").run(JSON.stringify(prefs), user.id);
+  return prefs;
 }
 
 export function createInvite(user) {

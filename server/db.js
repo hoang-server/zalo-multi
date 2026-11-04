@@ -1,7 +1,7 @@
 import path from "node:path";
 import crypto from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { DATA_DIR, ENC_KEY } from "./config.js";
+import { DATA_DIR, ENC_KEY, OPEN_SIGNUP } from "./config.js";
 
 export const db = new DatabaseSync(path.join(DATA_DIR, "app.db"));
 db.exec(`
@@ -76,7 +76,45 @@ CREATE TABLE IF NOT EXISTS push_subs (
   auth TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT
+);
 `);
+
+// Nâng cấp DB cũ: thêm cột mới nếu chưa có
+function addColumn(table, def) {
+  const name = def.split(" ")[0];
+  if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${def}`);
+}
+addColumn("users", "disabled INTEGER NOT NULL DEFAULT 0");
+addColumn("users", "prefs TEXT");                 // JSON: tuỳ chọn riêng của người dùng
+addColumn("users", "last_seen INTEGER");
+addColumn("zalo_accounts", "notify INTEGER NOT NULL DEFAULT 1");
+addColumn("zalo_accounts", "notify_groups INTEGER NOT NULL DEFAULT 1");
+addColumn("threads", "muted INTEGER NOT NULL DEFAULT 0");
+addColumn("messages", "media TEXT");             // tên file ảnh/file đã lưu trên server
+
+// Cài đặt chung do quản trị viên chỉnh (giá trị mặc định ở đây; thêm tính năng mới chỉ cần thêm khoá)
+export const SETTING_DEFAULTS = {
+  open_signup: OPEN_SIGNUP,  // cho đăng ký không cần mã mời
+  media_store: true,         // tải ảnh/file/video/tin thoại về server
+  media_max_mb: 50,          // bỏ qua file lớn hơn
+  group_history: 100,        // số tin lấy từ lịch sử nhóm khi mở nhóm
+};
+export function getSetting(key) {
+  const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key);
+  return row ? JSON.parse(row.value) : SETTING_DEFAULTS[key];
+}
+export function allSettings() {
+  return Object.fromEntries(Object.keys(SETTING_DEFAULTS).map((k) => [k, getSetting(k)]));
+}
+export function setSetting(key, value) {
+  if (!(key in SETTING_DEFAULTS)) return;
+  const def = SETTING_DEFAULTS[key];
+  const v = typeof def === "boolean" ? !!value : typeof def === "number" ? Math.max(0, Number(value) || 0) : String(value);
+  db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, JSON.stringify(v));
+}
 
 // Mã hoá AES-256-GCM cho phiên đăng nhập Zalo lưu trong DB
 export function encrypt(obj) {

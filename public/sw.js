@@ -5,6 +5,10 @@ self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
 self.addEventListener("push", (event) => {
   let d = {};
   try { d = event.data ? event.data.json() : {}; } catch { d = { title: "Zalo Multi", body: event.data?.text() }; }
+  // số tin chưa đọc trên icon app
+  if (typeof d.badge === "number" && self.navigator.setAppBadge) {
+    (d.badge > 0 ? self.navigator.setAppBadge(d.badge) : self.navigator.clearAppBadge()).catch(() => {});
+  }
   event.waitUntil(
     self.registration.showNotification(d.title || "Tin nhắn mới", {
       body: d.body || "",

@@ -6,6 +6,8 @@ import { PORT, HOST, BASE_PATH, VAPID } from "./config.js";
 import * as auth from "./auth.js";
 import * as zalo from "./zalo.js";
 import { saveSubscription, removeSubscription, addStream, pushToUser } from "./push.js";
+import * as admin from "./admin.js";
+import { serveMedia } from "./media.js";
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "public");
 const MIME = {
@@ -76,6 +78,7 @@ route("POST", "/api/register", async (req, res) => send(res, 200, { user: auth.r
 route("POST", "/api/login", async (req, res, { ip }) => send(res, 200, { user: auth.login(req, res, await readJson(req), ip) }), { open: true });
 route("POST", "/api/logout", (req, res) => { auth.logout(req, res); send(res, 200, { ok: true }); }, { open: true });
 route("POST", "/api/password", async (req, res, { user }) => { auth.changePassword(user, await readJson(req)); send(res, 200, { ok: true }); });
+route("POST", "/api/prefs", async (req, res, { user }) => send(res, 200, { prefs: auth.setPrefs(user, await readJson(req)) }));
 route("GET", "/api/invites", (req, res, { user }) => send(res, 200, { invites: auth.listInvites(user) }));
 route("POST", "/api/invites", (req, res, { user }) => send(res, 200, { code: auth.createInvite(user) }));
 
@@ -92,7 +95,17 @@ route("POST", "/api/push/test", async (req, res, { user }) => {
   send(res, 200, { ok: true });
 });
 
-route("GET", "/api/accounts", (req, res, { user }) => send(res, 200, { accounts: zalo.listAccounts(user) }));
+route("GET", "/api/accounts", (req, res, { user }) => send(res, 200, { accounts: zalo.listAccounts(user), badge: zalo.unreadTotal(user.id) }));
+route("POST", "/api/accounts/:id/notify", async (req, res, { user, p }) => { zalo.setAccountNotify(user, p.id, await readJson(req)); send(res, 200, { ok: true }); });
+route("POST", "/api/accounts/:id/read-all", (req, res, { user, p }) => { zalo.markAllRead(user, p.id); send(res, 200, { ok: true }); });
+route("POST", "/api/accounts/:id/threads/:type/:tid/mute", async (req, res, { user, p }) => {
+  zalo.setThreadMuted(user, p.id, p.type, p.tid, (await readJson(req)).muted); send(res, 200, { ok: true });
+});
+route("GET", "/api/media/:mid", (req, res, { user, p }) => {
+  const row = zalo.mediaRow(user, p.mid);
+  if (!row) throw auth.httpError(404, "Không có file");
+  serveMedia(req, res, row);
+});
 route("POST", "/api/accounts/qr", async (req, res, { user }) => send(res, 200, { key: zalo.startQrLogin(user) }));
 route("POST", "/api/accounts/qr/cancel", async (req, res, { user }) => { zalo.cancelQrLogin(user, (await readJson(req)).key); send(res, 200, { ok: true }); });
 route("DELETE", "/api/accounts/:id", (req, res, { user, p }) => { zalo.removeAccount(user, p.id); send(res, 200, { ok: true }); });
@@ -108,6 +121,18 @@ route("POST", "/api/accounts/:id/threads/:type/:tid/text", async (req, res, { us
   send(res, 200, await zalo.sendText(user, p.id, p.type, p.tid, (await readJson(req)).text)));
 route("POST", "/api/accounts/:id/threads/:type/:tid/image", async (req, res, { user, p }) =>
   send(res, 200, await zalo.sendImage(user, p.id, p.type, p.tid, await readJson(req))));
+
+// ---------- quản trị ----------
+const adminRoute = (method, pattern, handler) =>
+  route(method, pattern, async (req, res, ctx) => { admin.requireAdmin(ctx.user); await handler(req, res, ctx); });
+adminRoute("GET", "/api/admin/overview", (req, res) => send(res, 200, {
+  stats: admin.stats(), users: admin.listUsers(), settings: admin.getSettings(), invites: auth.listInvites({ is_admin: 1 }),
+}));
+adminRoute("POST", "/api/admin/users/:uid", async (req, res, { user, p }) => { admin.updateUser(user, p.uid, await readJson(req)); send(res, 200, { ok: true }); });
+adminRoute("POST", "/api/admin/users/:uid/reset-password", (req, res, { user, p }) => send(res, 200, { password: admin.resetPassword(user, p.uid) }));
+adminRoute("DELETE", "/api/admin/users/:uid", (req, res, { user, p }) => { admin.deleteUser(user, p.uid); send(res, 200, { ok: true }); });
+adminRoute("DELETE", "/api/admin/invites/:code", (req, res, { p }) => { admin.deleteInvite(p.code); send(res, 200, { ok: true }); });
+adminRoute("POST", "/api/admin/settings", async (req, res) => send(res, 200, { settings: admin.saveSettings(await readJson(req)) }));
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");

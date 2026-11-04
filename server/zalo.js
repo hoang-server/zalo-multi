@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { Zalo, ThreadType, LoginQRCallbackEventType } from "zca-js";
-import { db, encrypt, decrypt, now } from "./db.js";
+import { db, encrypt, decrypt, now, getSetting } from "./db.js";
+import { saveMedia, removeMediaOfAccount } from "./media.js";
 import { emit, pushToUser } from "./push.js";
 import { httpError } from "./auth.js";
 import { emoticons } from "../public/emoticons.js";
@@ -117,23 +118,47 @@ async function storeMessage(acc, msg, { notify }) {
   ).run(acc.id, threadId, type, info.name, info.avatar, ts, text, notify && !msg.isSelf ? 1 : 0, notify && !msg.isSelf ? 1 : 0);
 
   const out = {
-    accountId: acc.id, threadId, type, msgId: String(d.msgId), fromUid: d.uidFrom, fromName: d.dName,
+    id: Number(ins.lastInsertRowid), accountId: acc.id, threadId, type, msgId: String(d.msgId), fromUid: d.uidFrom, fromName: d.dName,
     ts, isSelf: msg.isSelf, ...p,
   };
   emit(acc.userId, "message", { ...out, threadName: info.name, threadAvatar: info.avatar });
 
+  // Lưu ảnh/file về server (chạy nền, không chặn tin nhắn)
+  if (p.url && ["image", "file", "video", "voice"].includes(p.kind)) {
+    const msgRowId = Number(ins.lastInsertRowid);
+    saveMedia(acc.id, msgRowId, p).catch((e) => console.error("lưu media lỗi", e?.message || e));
+  }
+
   if (notify && !msg.isSelf) {
-    const accName = db.prepare("SELECT name FROM zalo_accounts WHERE id = ?").get(acc.id)?.name || "Zalo";
-    const who = type === ThreadType.Group ? `${d.dName}: ` : "";
-    pushToUser(acc.userId, {
-      title: `${info.name} · ${accName}`,
-      body: who + text,
-      icon: info.avatar || undefined,
-      tag: `${acc.id}-${type}-${threadId}`,
-      url: `#/a/${acc.id}/${type}/${threadId}`,
-    });
+    const a = db.prepare("SELECT name, notify, notify_groups FROM zalo_accounts WHERE id = ?").get(acc.id);
+    const muted = db.prepare("SELECT muted FROM threads WHERE account_id = ? AND thread_id = ? AND type = ?").get(acc.id, threadId, type)?.muted;
+    const prefs = userPrefs(acc.userId);
+    if (a?.notify && !muted && (type !== ThreadType.Group || a.notify_groups)) {
+      const who = type === ThreadType.Group ? `${d.dName}: ` : "";
+      pushToUser(acc.userId, {
+        title: prefs.push_preview ? `${info.name} · ${a.name || "Zalo"}` : a.name || "Zalo Multi",
+        body: prefs.push_preview ? who + text : "Bạn có tin nhắn mới",
+        icon: prefs.push_preview ? info.avatar || undefined : undefined,
+        tag: `${acc.id}-${type}-${threadId}`,
+        url: `#/a/${acc.id}/${type}/${threadId}`,
+        badge: prefs.app_badge ? unreadTotal(acc.userId) : 0,
+      });
+    }
   }
   return true;
+}
+
+function userPrefs(userId) {
+  const row = db.prepare("SELECT prefs FROM users WHERE id = ?").get(userId);
+  return { push_preview: true, app_badge: true, ...JSON.parse(row?.prefs || "{}") };
+}
+
+// Tổng tin chưa đọc của người dùng (bỏ qua hội thoại đã tắt thông báo / tài khoản tắt thông báo) – dùng cho số trên icon app
+export function unreadTotal(userId) {
+  return db.prepare(
+    `SELECT COALESCE(SUM(t.unread), 0) n FROM threads t JOIN zalo_accounts a ON a.id = t.account_id
+     WHERE a.user_id = ? AND a.notify = 1 AND t.muted = 0 AND (t.type = 0 OR a.notify_groups = 1)`
+  ).get(userId).n;
 }
 
 function setStatus(accountId, userId, status, msg = null) {
@@ -209,7 +234,7 @@ export async function connect(accountId) {
 }
 
 export function connectAll() {
-  const rows = db.prepare("SELECT id FROM zalo_accounts").all();
+  const rows = db.prepare("SELECT a.id FROM zalo_accounts a JOIN users u ON u.id = a.user_id WHERE u.disabled = 0").all();
   rows.forEach((r, i) => setTimeout(() => connect(r.id).catch(() => {}), i * 2000));
 }
 
@@ -305,8 +330,8 @@ function liveApi(user, accountId) {
 
 export function listAccounts(user) {
   return db.prepare(
-    `SELECT a.id, a.name, a.avatar, a.status, a.status_msg statusMsg,
-            (SELECT COALESCE(SUM(unread),0) FROM threads t WHERE t.account_id = a.id) unread
+    `SELECT a.id, a.name, a.avatar, a.status, a.status_msg statusMsg, a.notify, a.notify_groups notifyGroups,
+            (SELECT COALESCE(SUM(unread),0) FROM threads t WHERE t.account_id = a.id AND t.muted = 0) unread
      FROM zalo_accounts a WHERE a.user_id = ? ORDER BY a.created_at`
   ).all(user.id);
 }
@@ -317,6 +342,7 @@ export function removeAccount(user, accountId) {
   live.delete(row.id);
   try { acc?.api.listener.stop(); } catch {}
   db.prepare("DELETE FROM zalo_accounts WHERE id = ?").run(row.id);
+  removeMediaOfAccount(row.id);
 }
 
 export function reconnect(user, accountId) {
@@ -327,7 +353,7 @@ export function reconnect(user, accountId) {
 export function listThreads(user, accountId, q = "") {
   const row = ownAccount(user, accountId);
   return db.prepare(
-    `SELECT thread_id threadId, type, name, avatar, last_ts lastTs, last_text lastText, unread
+    `SELECT thread_id threadId, type, name, avatar, last_ts lastTs, last_text lastText, unread, muted
      FROM threads WHERE account_id = ? AND (? = '' OR name LIKE ?) ORDER BY last_ts DESC LIMIT 300`
   ).all(row.id, q, `%${q}%`);
 }
@@ -335,7 +361,7 @@ export function listThreads(user, accountId, q = "") {
 export function listMessages(user, accountId, type, threadId, before) {
   const row = ownAccount(user, accountId);
   const rows = db.prepare(
-    `SELECT msg_id msgId, from_uid fromUid, from_name fromName, ts, is_self isSelf, kind, text, url, thumb, title
+    `SELECT id, msg_id msgId, from_uid fromUid, from_name fromName, ts, is_self isSelf, kind, text, url, thumb, title, media
      FROM messages WHERE account_id = ? AND type = ? AND thread_id = ? AND ts < ?
      ORDER BY ts DESC LIMIT 60`
   ).all(row.id, Number(type), String(threadId), Number(before) || 9e15);
@@ -393,9 +419,45 @@ export async function fetchHistory(user, accountId, type, threadId) {
   if (historyDone.has(key)) return { added: 0 };
   const api = liveApi(user, accountId);
   const acc = live.get(row.id);
-  const r = await api.getGroupChatHistory(String(threadId), 100);
+  const r = await api.getGroupChatHistory(String(threadId), Math.min(500, getSetting("group_history")) || 50);
   historyDone.add(key);
   let added = 0;
   for (const m of r.groupMsgs || []) if (await storeMessage(acc, m, { notify: false })) added++;
   return { added };
+}
+
+// ---------- Cài đặt thông báo ----------
+export function setAccountNotify(user, accountId, { notify, notifyGroups }) {
+  const row = ownAccount(user, accountId);
+  if (notify !== undefined) db.prepare("UPDATE zalo_accounts SET notify = ? WHERE id = ?").run(notify ? 1 : 0, row.id);
+  if (notifyGroups !== undefined) db.prepare("UPDATE zalo_accounts SET notify_groups = ? WHERE id = ?").run(notifyGroups ? 1 : 0, row.id);
+}
+export function setThreadMuted(user, accountId, type, threadId, muted) {
+  const row = ownAccount(user, accountId);
+  db.prepare("UPDATE threads SET muted = ? WHERE account_id = ? AND type = ? AND thread_id = ?").run(muted ? 1 : 0, row.id, Number(type), String(threadId));
+}
+export function markAllRead(user, accountId) {
+  const row = ownAccount(user, accountId);
+  db.prepare("UPDATE threads SET unread = 0 WHERE account_id = ?").run(row.id);
+}
+
+// ---------- Cho trang quản trị ----------
+export function stopAccountsOfUser(userId) {
+  for (const r of db.prepare("SELECT id FROM zalo_accounts WHERE user_id = ?").all(userId)) {
+    const acc = live.get(r.id);
+    live.delete(r.id);
+    try { acc?.api.listener.stop(); } catch {}
+    setStatus(r.id, userId, "offline", "Người dùng đã bị khoá");
+  }
+}
+export function startAccountsOfUser(userId) {
+  for (const r of db.prepare("SELECT id FROM zalo_accounts WHERE user_id = ?").all(userId)) connect(r.id).catch(() => {});
+}
+export const liveCount = () => live.size;
+
+export function mediaRow(user, messageId) {
+  return db.prepare(
+    `SELECT m.media, m.title FROM messages m JOIN zalo_accounts a ON a.id = m.account_id
+     WHERE m.id = ? AND a.user_id = ? AND m.media IS NOT NULL`
+  ).get(Number(messageId), user.id);
 }

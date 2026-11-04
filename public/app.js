@@ -37,6 +37,17 @@ function timeLabel(ts) {
 const avatar = (src, name, cls = "") =>
   src ? `<img class="avatar ${cls}" src="${safeUrl(src)}" alt="" referrerpolicy="no-referrer" loading="lazy">`
       : `<div class="avatar ${cls} ph">${esc((name || "?").trim().charAt(0).toUpperCase())}</div>`;
+// avatar kèm số tin chưa đọc ở góc
+const avBadge = (src, name, n, cls = "", muted = false) =>
+  `<span class="avw">${avatar(src, name, cls)}${n ? `<span class="ab ${muted ? "mute" : ""}">${n > 99 ? "99+" : n}</span>` : ""}</span>`;
+// file đã lưu trên server, nếu chưa có thì dùng link Zalo
+const mediaSrc = (m, fallback) => (m.media && m.id ? `api/media/${m.id}` : safeUrl(fallback));
+// số tin chưa đọc trên icon app (iPhone iOS 16.4+ khi đã thêm ra MH chính, Android/máy tính Chrome)
+function setBadge(n) {
+  state.badge = n;
+  if (state.user?.prefs?.app_badge === false) n = 0;
+  try { n > 0 ? navigator.setAppBadge?.(n) : navigator.clearAppBadge?.(); } catch {}
+}
 const statusText = { online: "Đang hoạt động", connecting: "Đang kết nối…", reconnecting: "Đang kết nối lại…", offline: "Ngoại tuyến", kicked: "Bị ngắt (mở Zalo Web nơi khác)", expired: "Phiên hết hạn – cần quét lại QR" };
 
 // ---------- định tuyến ----------
@@ -45,6 +56,7 @@ function parseRoute() {
   const h = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   if (h[0] === "login") return { name: "login" };
   if (h[0] === "settings") return { name: "settings" };
+  if (h[0] === "admin") return { name: "admin" };
   if (h[0] === "a" && h[1] && h[3]) return { name: "chat", acc: Number(h[1]), type: Number(h[2]), tid: decodeURIComponent(h[3]) };
   if (h[0] === "a" && h[1]) return { name: "threads", acc: Number(h[1]) };
   return { name: "home" };
@@ -60,6 +72,7 @@ async function render() {
   try {
     if (r.name === "login") return renderLogin();
     if (r.name === "settings") return renderSettings();
+    if (r.name === "admin") return renderAdmin();
     await loadAccounts();
     if (r.name === "home") {
       if (state.accounts.length === 1 && !sessionStorage.getItem("stayHome")) return go(`#/a/${state.accounts[0].id}`);
@@ -95,13 +108,13 @@ function renderLogin(mode = state.loginMode || "login") {
     const body = Object.fromEntries(new FormData(e.target));
     try {
       const { user } = await api("POST", reg ? "register" : "login", body);
-      state.user = user; state.firstUser = false; startEvents(); go("#/");
+      state.user = (await api("GET", "me")).user || user; state.firstUser = false; startEvents(); go("#/");
     } catch (err) { document.getElementById("err").textContent = err.message; }
   };
 }
 
 // ---------- tài khoản Zalo ----------
-async function loadAccounts() { state.accounts = (await api("GET", "accounts")).accounts; }
+async function loadAccounts() { const r = await api("GET", "accounts"); state.accounts = r.accounts; setBadge(r.badge); }
 
 function header(title, { back, right = "" } = {}) {
   return `<header class="bar">
@@ -126,10 +139,9 @@ function renderHome() {
     <ul class="list">
       ${state.accounts.map((a) => `
         <li><a class="row" href="#/a/${a.id}">
-          ${avatar(a.avatar, a.name)}
-          <div class="grow"><div class="name">${esc(a.name)}</div>
+          ${avBadge(a.avatar, a.name, a.unread, "", !a.notify)}
+          <div class="grow"><div class="name">${esc(a.name)}${a.notify ? "" : " 🔕"}</div>
             <div class="sub st-${a.status}">${esc(statusText[a.status] || a.status)}</div></div>
-          ${a.unread ? `<span class="badge">${a.unread > 99 ? "99+" : a.unread}</span>` : ""}
         </a></li>`).join("")}
     </ul>
     ${state.accounts.length ? "" : `<p class="center muted">Chưa có tài khoản Zalo nào.<br>Bấm nút bên dưới và quét mã QR bằng app Zalo trên điện thoại khác hoặc máy này.</p>`}
@@ -144,7 +156,7 @@ function accountSwitcher(activeId) {
   if (state.accounts.length < 2) return "";
   return `<nav class="switcher">${state.accounts.map((a) => `
     <a href="#/a/${a.id}" class="sw ${a.id === activeId ? "on" : ""}" title="${esc(a.name)}">
-      ${avatar(a.avatar, a.name, "sm")}${a.unread && a.id !== activeId ? `<span class="dot"></span>` : ""}
+      ${avBadge(a.avatar, a.name, a.id !== activeId ? a.unread : 0, "sm", !a.notify)}
     </a>`).join("")}</nav>`;
 }
 
@@ -163,11 +175,11 @@ async function renderThreads(accId, q = state.q || "") {
   <main class="scroll">
     <ul class="list">${state.threads.map((t) => `
       <li><a class="row" href="#/a/${accId}/${t.type}/${encodeURIComponent(t.threadId)}">
-        ${avatar(t.avatar, t.name)}
-        <div class="grow"><div class="name">${t.type === 1 ? "👥 " : ""}${esc(t.name)}</div>
+        ${avBadge(t.avatar, t.name, t.unread, "", t.muted)}
+        <div class="grow"><div class="name">${t.type === 1 ? "👥 " : ""}${esc(t.name)}${t.muted ? " 🔕" : ""}</div>
           <div class="sub ${t.unread ? "bold" : ""}">${esc(emoticons(t.lastText || ""))}</div></div>
         <div class="meta"><div class="time">${t.lastTs ? timeLabel(t.lastTs) : ""}</div>
-          ${t.unread ? `<span class="badge">${t.unread > 99 ? "99+" : t.unread}</span>` : ""}</div>
+          </div>
       </a></li>`).join("")}</ul>
     ${state.threads.length ? "" : `<p class="center muted">Chưa có tin nhắn. Tin mới sẽ hiện ở đây.<br><button class="link" id="sync2">Tải danh bạ & nhóm</button></p>`}
   </main>`;
@@ -178,7 +190,13 @@ async function renderThreads(accId, q = state.q || "") {
   document.getElementById("sync2")?.addEventListener("click", sync);
   document.getElementById("rc")?.addEventListener("click", () => api("POST", `accounts/${accId}/reconnect`).then(() => toast("Đang kết nối lại…")));
   document.getElementById("reqr")?.addEventListener("click", startQr);
+  const setNotify = (body, msg) => api("POST", `accounts/${accId}/notify`, body).then(() => { toast(msg); render(); });
   document.getElementById("menu").onclick = () => sheet([
+    [acc.notify ? "🔕 Tắt thông báo tài khoản này" : "🔔 Bật thông báo tài khoản này",
+      () => setNotify({ notify: !acc.notify }, acc.notify ? "Đã tắt thông báo của tài khoản" : "Đã bật thông báo của tài khoản")],
+    [acc.notifyGroups ? "🔕 Tắt thông báo tin nhóm" : "🔔 Bật thông báo tin nhóm",
+      () => setNotify({ notifyGroups: !acc.notifyGroups }, acc.notifyGroups ? "Đã tắt thông báo tin nhóm" : "Đã bật thông báo tin nhóm")],
+    ["✓ Đánh dấu tất cả đã đọc", () => api("POST", `accounts/${accId}/read-all`).then(render)],
     ["Tải danh bạ & nhóm", sync],
     ["Kết nối lại", () => api("POST", `accounts/${accId}/reconnect`).then(() => toast("Đang kết nối lại…"))],
     ["Quét lại mã QR", startQr],
@@ -239,7 +257,8 @@ async function renderChat(r) {
   state.messages = messages;
   const t = threads.find((x) => x.threadId === r.tid && x.type === r.type) || { name: r.tid };
   $app.innerHTML = `
-  ${header(`<div class="chat-title">${avatar(t.avatar, t.name, "sm")}<div><div>${esc(t.name)}</div><div class="sub small">${esc(acc.name)}</div></div></div>`, { back: `#/a/${r.acc}` })}
+  ${header(`<div class="chat-title">${avatar(t.avatar, t.name, "sm")}<div><div>${esc(t.name)}${t.muted ? " 🔕" : ""}</div><div class="sub small">${esc(acc.name)}</div></div></div>`,
+    { back: `#/a/${r.acc}`, right: `<button class="icon-btn" id="cmenu" aria-label="Tuỳ chọn">⋯</button>` })}
   <main class="scroll chat" id="msgs">
     ${messages.length >= 60 ? `<div class="center"><button class="link" id="older">Xem tin cũ hơn</button></div>` : ""}
     <div id="mlist">${messages.map((m) => bubble(m, r.type)).join("")}</div>
@@ -250,6 +269,15 @@ async function renderChat(r) {
     <button class="icon-btn send" type="submit" aria-label="Gửi">➤</button>
   </form>`;
   scrollBottom();
+  loadAccounts().catch(() => {}); // cập nhật số trên icon app sau khi đọc
+  navigator.serviceWorker?.ready.then((reg) => reg.getNotifications({ tag: `${r.acc}-${r.type}-${r.tid}` }))
+    .then((ns) => ns?.forEach((n) => n.close())).catch(() => {});
+  document.getElementById("cmenu").onclick = () => sheet([
+    [t.muted ? "🔔 Bật thông báo hội thoại này" : "🔕 Tắt thông báo hội thoại này", async () => {
+      await api("POST", `accounts/${r.acc}/threads/${r.type}/${encodeURIComponent(r.tid)}/mute`, { muted: !t.muted });
+      t.muted = t.muted ? 0 : 1; toast(t.muted ? "Đã tắt thông báo hội thoại" : "Đã bật thông báo hội thoại"); renderChat(r);
+    }],
+  ]);
   const txt = document.getElementById("txt");
   txt.oninput = () => { txt.style.height = "auto"; txt.style.height = Math.min(txt.scrollHeight, 140) + "px"; };
   txt.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && !isIOS && !/Android/.test(navigator.userAgent)) { e.preventDefault(); document.getElementById("cf").requestSubmit(); } };
@@ -297,10 +325,10 @@ async function renderChat(r) {
 function bubble(m, type) {
   let body;
   switch (m.kind) {
-    case "image": body = `<img class="photo" src="${safeUrl(m.thumb || m.url)}" data-full="${safeUrl(m.url || m.thumb)}" referrerpolicy="no-referrer" loading="lazy" alt="Ảnh">${m.text ? `<div>${esc(m.text)}</div>` : ""}`; break;
-    case "file": body = `<a class="file" href="${safeUrl(m.url)}" target="_blank" rel="noopener noreferrer">📎 ${esc(m.title || "Tệp")}<span class="small muted"> ${esc(m.text || "")}</span></a>`; break;
-    case "video": body = `<a class="file" href="${safeUrl(m.url)}" target="_blank" rel="noopener noreferrer">🎬 Video</a>`; break;
-    case "voice": body = m.url ? `<audio controls preload="none" src="${safeUrl(m.url)}"></audio>` : "[Tin nhắn thoại]"; break;
+    case "image": body = `<img class="photo" src="${mediaSrc(m, m.thumb || m.url)}" data-full="${mediaSrc(m, m.url || m.thumb)}" referrerpolicy="no-referrer" loading="lazy" alt="Ảnh">${m.text ? `<div>${esc(m.text)}</div>` : ""}`; break;
+    case "file": body = `<a class="file" href="${mediaSrc(m, m.url)}" target="_blank" rel="noopener noreferrer">📎 ${esc(m.title || "Tệp")}<span class="small muted"> ${esc(m.text || "")}${m.media ? " · đã lưu" : ""}</span></a>`; break;
+    case "video": body = m.media ? `<video controls preload="metadata" playsinline src="${mediaSrc(m)}"></video>` : `<a class="file" href="${safeUrl(m.url)}" target="_blank" rel="noopener noreferrer">🎬 Video</a>`; break;
+    case "voice": body = m.url || m.media ? `<audio controls preload="none" src="${mediaSrc(m, m.url)}"></audio>` : "[Tin nhắn thoại]"; break;
     case "link": body = `<a class="file" href="${safeUrl(m.url)}" target="_blank" rel="noopener noreferrer">🔗 ${esc(m.title || m.url)}</a>${m.text ? `<div class="small">${esc(m.text)}</div>` : ""}`; break;
     case "sticker": body = m.url ? `<img class="sticker" src="${safeUrl(m.url)}" referrerpolicy="no-referrer" loading="lazy" alt="Sticker">` : "[Sticker]"; break;
     default: body = linkify(esc(emoticons(m.text || "")));
@@ -327,7 +355,7 @@ async function prepareImage(file) {
 
 // ---------- cài đặt ----------
 async function renderSettings() {
-  const { invites } = state.user.is_admin ? await api("GET", "invites") : { invites: [] };
+  const pf = state.user.prefs || {};
   $app.innerHTML = `
   ${header("Cài đặt", { back: "#/" })}
   <main class="scroll pad">
@@ -338,11 +366,11 @@ async function renderSettings() {
       <button class="btn primary" id="pushon">Bật thông báo trên máy này</button>
       <button class="btn" id="pushtest">Gửi thử</button>
       <button class="btn" id="pushoff">Tắt trên máy này</button>
+      <label class="toggle"><input type="checkbox" data-pref="push_preview" ${pf.push_preview !== false ? "checked" : ""}> Hiện tên người gửi & nội dung tin trong thông báo</label>
+      <label class="toggle"><input type="checkbox" data-pref="app_badge" ${pf.app_badge !== false ? "checked" : ""}> Hiện số tin chưa đọc trên icon app</label>
+      <p class="muted small">Tắt thông báo riêng từng tài khoản Zalo hoặc từng hội thoại: bấm nút ⋯ ở góc trên của tài khoản / hội thoại đó.</p>
     </section>
-    ${state.user.is_admin ? `<section class="card"><h3>Mã mời người dùng mới</h3>
-      <button class="btn" id="inv">Tạo mã mời</button>
-      <ul class="plain">${invites.map((i) => `<li><code>${esc(i.code)}</code> ${i.used_by ? `– đã dùng bởi ${esc(i.used_by)}` : "– chưa dùng"}</li>`).join("")}</ul>
-    </section>` : ""}
+    ${state.user.is_admin ? `<a class="btn block" href="#/admin">🛠 Trang quản trị (người dùng, mã mời, tính năng)</a>` : ""}
     <section class="card"><h3>Đổi mật khẩu</h3>
       <form id="pw"><input name="current" type="password" placeholder="Mật khẩu hiện tại" autocomplete="current-password" required>
       <input name="password" type="password" placeholder="Mật khẩu mới (≥ 8 ký tự)" autocomplete="new-password" required minlength="8">
@@ -356,16 +384,100 @@ async function renderSettings() {
   document.getElementById("pushon").onclick = () => enablePush().then(updatePushState);
   document.getElementById("pushtest").onclick = () => api("POST", "push/test").then(() => toast("Đã gửi, chờ vài giây…"));
   document.getElementById("pushoff").onclick = () => disablePush().then(updatePushState);
-  document.getElementById("inv")?.addEventListener("click", async () => {
-    const { code } = await api("POST", "invites");
-    try { await navigator.clipboard.writeText(code); toast("Đã tạo & copy mã: " + code); } catch { toast("Mã mời: " + code, 8000); }
-    renderSettings();
+  document.querySelectorAll("[data-pref]").forEach((el) => el.onchange = async () => {
+    try {
+      state.user.prefs = (await api("POST", "prefs", { [el.dataset.pref]: el.checked })).prefs;
+      if (el.dataset.pref === "app_badge") setBadge(state.badge || 0);
+      toast("Đã lưu");
+    } catch (e) { toast(e.message); el.checked = !el.checked; }
   });
   document.getElementById("pw").onsubmit = async (e) => {
     e.preventDefault();
     try { await api("POST", "password", Object.fromEntries(new FormData(e.target))); toast("Đã đổi mật khẩu"); e.target.reset(); } catch (err) { toast(err.message); }
   };
   document.getElementById("logout").onclick = async () => { await disablePush().catch(() => {}); await api("POST", "logout"); state.user = null; go("#/login"); };
+}
+
+// ---------- quản trị ----------
+const fmtBytes = (n) => (n > 1073741824 ? (n / 1073741824).toFixed(2) + " GB" : n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.ceil(n / 1024) + " KB");
+const fmtDate = (ts) => (ts ? new Date(ts).toLocaleString("vi-VN", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" }) : "–");
+const SETTING_INFO = {
+  open_signup: ["Cho đăng ký tự do", "Bật: ai có link cũng tự tạo tài khoản được, không cần mã mời.", "bool"],
+  media_store: ["Lưu ảnh/file về server", "Tải ảnh, file, video, tin thoại nhận được về server để xem lại khi link Zalo hết hạn.", "bool"],
+  media_max_mb: ["Giới hạn dung lượng mỗi file (MB)", "File lớn hơn sẽ không lưu, vẫn mở bằng link Zalo. 0 = không giới hạn.", "num"],
+  group_history: ["Số tin lịch sử nhóm", "Số tin cũ lấy từ Zalo khi mở một nhóm lần đầu (tối đa 500).", "num"],
+};
+async function renderAdmin() {
+  if (!state.user.is_admin) return go("#/settings");
+  const { stats: st, users, settings, invites } = await api("GET", "admin/overview");
+  $app.innerHTML = `
+  ${header("Quản trị", { back: "#/settings" })}
+  <main class="scroll pad">
+    <section class="card"><h3>Tổng quan</h3>
+      <div class="stats">
+        <div><b>${st.users}</b><span>người dùng</span></div>
+        <div><b>${st.zaloOnline}/${st.zaloAccounts}</b><span>Zalo đang kết nối</span></div>
+        <div><b>${st.messages.toLocaleString("vi-VN")}</b><span>tin nhắn</span></div>
+        <div><b>${st.devices}</b><span>máy nhận thông báo</span></div>
+        <div><b>${fmtBytes(st.dbBytes)}</b><span>dữ liệu</span></div>
+        <div><b>${fmtBytes(st.media.bytes)}</b><span>${st.media.files} file đã lưu</span></div>
+      </div>
+      <p class="muted small">Phiên bản ${esc(st.version)} · Node ${esc(st.node)} · chạy từ ${fmtDate(st.startedAt)}</p>
+    </section>
+
+    <section class="card"><h3>Người dùng</h3>
+      <ul class="list admin-users">${users.map((u) => `
+        <li class="row">
+          <div class="grow"><div class="name">${esc(u.username)} ${u.isAdmin ? `<span class="tag">quản trị</span>` : ""} ${u.disabled ? `<span class="tag red">đã khoá</span>` : ""}</div>
+            <div class="sub small">${u.accounts} Zalo (${u.online} online) · ${u.devices} máy · vào lần cuối ${fmtDate(u.lastSeen)}</div></div>
+          ${u.id === state.user.id ? `<span class="muted small">bạn</span>` : `<button class="icon-btn" data-u="${u.id}" aria-label="Tuỳ chọn">⋯</button>`}
+        </li>`).join("")}</ul>
+    </section>
+
+    <section class="card"><h3>Mã mời</h3>
+      <button class="btn" id="inv">＋ Tạo mã mời</button>
+      <ul class="plain">${invites.map((i) => `<li><code>${esc(i.code)}</code> ${i.used_by ? `– đã dùng bởi ${esc(i.used_by)}` : `– chưa dùng <button class="link" data-delinv="${esc(i.code)}">xoá</button>`}</li>`).join("")}</ul>
+    </section>
+
+    <section class="card"><h3>Tính năng</h3>
+      <form id="setf">${Object.entries(settings).map(([k, v]) => {
+        const [label, help, kind] = SETTING_INFO[k] || [k, "", typeof v === "boolean" ? "bool" : "num"];
+        return kind === "bool"
+          ? `<label class="toggle"><input type="checkbox" name="${k}" ${v ? "checked" : ""}> <span><b>${esc(label)}</b><br><span class="muted small">${esc(help)}</span></span></label>`
+          : `<label>${esc(label)}<input type="number" min="0" name="${k}" value="${esc(v)}"><span class="muted small">${esc(help)}</span></label>`;
+      }).join("")}
+      <button class="btn primary">Lưu cài đặt</button></form>
+    </section>
+  </main>`;
+  document.getElementById("inv").onclick = async () => {
+    const { code } = await api("POST", "invites");
+    try { await navigator.clipboard.writeText(code); toast("Đã tạo & copy mã: " + code); } catch { toast("Mã mời: " + code, 8000); }
+    renderAdmin();
+  };
+  document.querySelectorAll("[data-delinv]").forEach((b) => b.onclick = () => api("DELETE", `admin/invites/${encodeURIComponent(b.dataset.delinv)}`).then(renderAdmin));
+  document.getElementById("setf").onsubmit = async (e) => {
+    e.preventDefault();
+    const body = {};
+    for (const el of e.target.elements) if (el.name) body[el.name] = el.type === "checkbox" ? el.checked : Number(el.value);
+    try { await api("POST", "admin/settings", body); toast("Đã lưu cài đặt"); renderAdmin(); } catch (err) { toast(err.message); }
+  };
+  document.querySelectorAll("[data-u]").forEach((b) => b.onclick = () => {
+    const u = users.find((x) => x.id === Number(b.dataset.u));
+    const act = (body, msg) => api("POST", `admin/users/${u.id}`, body).then(() => { toast(msg); renderAdmin(); }).catch((e) => toast(e.message));
+    sheet([
+      [u.isAdmin ? "Bỏ quyền quản trị" : "Cấp quyền quản trị", () => act({ isAdmin: !u.isAdmin }, "Đã cập nhật quyền")],
+      [u.disabled ? "Mở khoá tài khoản" : "Khoá tài khoản (ngắt Zalo, đăng xuất)", () => act({ disabled: !u.disabled }, u.disabled ? "Đã mở khoá" : "Đã khoá")],
+      ["Đặt lại mật khẩu", async () => {
+        if (!confirm(`Đặt lại mật khẩu cho ${u.username}?`)) return;
+        try { const { password } = await api("POST", `admin/users/${u.id}/reset-password`); prompt(`Mật khẩu mới của ${u.username} (gửi cho họ, họ nên đổi lại):`, password); }
+        catch (e) { toast(e.message); }
+      }],
+      ["Xoá người dùng", async () => {
+        if (!confirm(`Xoá ${u.username}? Toàn bộ tài khoản Zalo, tin nhắn và file đã lưu của người này trong app sẽ bị xoá.`)) return;
+        api("DELETE", `admin/users/${u.id}`).then(() => { toast("Đã xoá"); renderAdmin(); }).catch((e) => toast(e.message));
+      }, "danger"],
+    ]);
+  });
 }
 
 // ---------- push ----------
@@ -433,6 +545,7 @@ function startEvents() {
     } else if (r?.name === "chat") {
       const a = state.accounts.find((x) => x.id === m.accountId); if (a && !m.isSelf) a.unread++;
     }
+    if (!m.isSelf && !(r?.name === "chat" && r.acc === m.accountId && r.tid === m.threadId)) setBadge((state.badge || 0) + 1);
   });
   es.addEventListener("account", (e) => {
     const d = JSON.parse(e.data);

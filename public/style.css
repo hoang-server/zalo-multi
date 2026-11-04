@@ -99,3 +99,18 @@ audio { max-width: 240px; }
 .msg.stk .bubble { background: none; box-shadow: none; padding: 0; }
 .msg.stk .ts { display: block; text-align: right; }
 img.sticker { width: 120px; height: 120px; object-fit: contain; display: block; }
+.avw { position: relative; display: inline-flex; flex: none; }
+.ab { position: absolute; top: -3px; right: -5px; min-width: 19px; height: 19px; padding: 0 5px; border-radius: 10px; background: var(--danger); color: #fff;
+  font-size: 11px; font-weight: 700; line-height: 19px; text-align: center; border: 2px solid var(--bg); box-sizing: border-box; }
+.avatar.sm + .ab { top: -5px; right: -7px; }
+.ab.mute { background: #8e99a8; }
+.toggle { display: flex; gap: 10px; align-items: flex-start; margin: 12px 0; font-weight: normal; }
+.toggle input { width: 20px; height: 20px; flex: none; margin: 1px 0 0; }
+.stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; margin-bottom: 8px; }
+.stats div { background: var(--bg2); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; }
+.stats b { font-size: 18px; } .stats span { font-size: 12px; color: var(--muted); }
+.tag { font-size: 11px; background: var(--bg2); border-radius: 6px; padding: 1px 6px; font-weight: 600; color: var(--muted); }
+.tag.red { background: var(--danger); color: #fff; }
+.admin-users .row { padding: 10px 0; }
+.bubble video { max-width: 100%; max-height: 360px; border-radius: 10px; display: block; }
+.toggle { color: var(--fg); }
