@@ -46,8 +46,12 @@ function serveStatic(req, res, rel) {
       res.writeHead(404); return res.end("Not found");
     }
     const ext = path.extname(file);
-    const noCache = ext === ".html" || rel === "/sw.js" || ext === ".webmanifest";
+    // html/js/css luôn hỏi lại server (304 nếu chưa đổi) để bản cập nhật tới máy ngay
+    const noCache = [".html", ".js", ".css", ".webmanifest"].includes(ext);
+    const lastMod = st.mtime.toUTCString();
+    if (req.headers["if-modified-since"] === lastMod) { res.writeHead(304); return res.end(); }
     res.writeHead(200, {
+      "Last-Modified": lastMod,
       "Content-Type": MIME[ext] || "application/octet-stream",
       "Content-Length": st.size,
       "Cache-Control": noCache ? "no-cache" : "public, max-age=86400",
@@ -98,6 +102,8 @@ route("GET", "/api/accounts/:id/threads", (req, res, { user, p, url }) =>
   send(res, 200, { threads: zalo.listThreads(user, p.id, (url.searchParams.get("q") || "").slice(0, 100)) }));
 route("GET", "/api/accounts/:id/threads/:type/:tid/messages", (req, res, { user, p, url }) =>
   send(res, 200, { messages: zalo.listMessages(user, p.id, p.type, p.tid, url.searchParams.get("before")) }));
+route("POST", "/api/accounts/:id/threads/:type/:tid/history", async (req, res, { user, p }) =>
+  send(res, 200, await zalo.fetchHistory(user, p.id, p.type, p.tid)));
 route("POST", "/api/accounts/:id/threads/:type/:tid/text", async (req, res, { user, p }) =>
   send(res, 200, await zalo.sendText(user, p.id, p.type, p.tid, (await readJson(req)).text)));
 route("POST", "/api/accounts/:id/threads/:type/:tid/image", async (req, res, { user, p }) =>

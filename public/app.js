@@ -1,4 +1,5 @@
 // Zalo Multi – giao diện web (không cần build)
+import { emoticons } from "./emoticons.js";
 const $app = document.getElementById("app");
 const state = { user: null, needsInvite: false, vapidKey: null, accounts: [], threads: [], messages: [], route: null, qr: null };
 
@@ -164,7 +165,7 @@ async function renderThreads(accId, q = state.q || "") {
       <li><a class="row" href="#/a/${accId}/${t.type}/${encodeURIComponent(t.threadId)}">
         ${avatar(t.avatar, t.name)}
         <div class="grow"><div class="name">${t.type === 1 ? "👥 " : ""}${esc(t.name)}</div>
-          <div class="sub ${t.unread ? "bold" : ""}">${esc(t.lastText || "")}</div></div>
+          <div class="sub ${t.unread ? "bold" : ""}">${esc(emoticons(t.lastText || ""))}</div></div>
         <div class="meta"><div class="time">${t.lastTs ? timeLabel(t.lastTs) : ""}</div>
           ${t.unread ? `<span class="badge">${t.unread > 99 ? "99+" : t.unread}</span>` : ""}</div>
       </a></li>`).join("")}</ul>
@@ -280,6 +281,12 @@ async function renderChat(r) {
     box.scrollTop = box.scrollHeight - h;
     if (older.length < 60) document.getElementById("older").remove();
   });
+  // Nhóm: lấy thêm lịch sử từ Zalo (một lần mỗi nhóm), có tin mới thì vẽ lại
+  if (r.type === 1 && acc.status === "online" && !renderChat.hist?.has(r.acc + ":" + r.tid)) {
+    (renderChat.hist ||= new Set()).add(r.acc + ":" + r.tid);
+    api("POST", `accounts/${r.acc}/threads/1/${encodeURIComponent(r.tid)}/history`)
+      .then((h) => { if (h.added && state.route?.name === "chat" && state.route.tid === r.tid) renderChat(r); }).catch(() => {});
+  }
   // ảnh: bấm để xem lớn
   document.getElementById("msgs").onclick = (e) => {
     const im = e.target.closest("img.photo");
@@ -295,9 +302,10 @@ function bubble(m, type) {
     case "video": body = `<a class="file" href="${safeUrl(m.url)}" target="_blank" rel="noopener noreferrer">🎬 Video</a>`; break;
     case "voice": body = m.url ? `<audio controls preload="none" src="${safeUrl(m.url)}"></audio>` : "[Tin nhắn thoại]"; break;
     case "link": body = `<a class="file" href="${safeUrl(m.url)}" target="_blank" rel="noopener noreferrer">🔗 ${esc(m.title || m.url)}</a>${m.text ? `<div class="small">${esc(m.text)}</div>` : ""}`; break;
-    default: body = linkify(esc(m.text || ""));
+    case "sticker": body = m.url ? `<img class="sticker" src="${safeUrl(m.url)}" referrerpolicy="no-referrer" loading="lazy" alt="Sticker">` : "[Sticker]"; break;
+    default: body = linkify(esc(emoticons(m.text || "")));
   }
-  return `<div class="msg ${m.isSelf ? "me" : ""}">
+  return `<div class="msg ${m.isSelf ? "me" : ""} ${m.kind === "sticker" && m.url ? "stk" : ""}">
     ${type === 1 && !m.isSelf ? `<div class="from">${esc(m.fromName || "")}</div>` : ""}
     <div class="bubble">${body}<span class="ts">${new Date(m.ts).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}</span></div></div>`;
 }
@@ -409,6 +417,11 @@ function startEvents() {
     const r = state.route;
     if (r?.name === "chat" && r.acc === m.accountId && r.tid === m.threadId && r.type === m.type) {
       if (state.messages.some((x) => x.msgId === m.msgId)) return;
+      if (state.messages.length && m.ts < state.messages[state.messages.length - 1].ts) {
+        // tin cũ vừa đồng bộ về: vẽ lại để đúng thứ tự
+        clearTimeout(startEvents.c); startEvents.c = setTimeout(() => state.route?.name === "chat" && renderChat(state.route), 800);
+        return;
+      }
       state.messages.push(m);
       const box = document.getElementById("msgs");
       const atBottom = box && box.scrollHeight - box.scrollTop - box.clientHeight < 120;

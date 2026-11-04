@@ -96,3 +96,6 @@ audio { max-width: 240px; }
 #toast { position: fixed; left: 50%; bottom: calc(80px + var(--safe-b)); transform: translateX(-50%) translateY(20px); background: rgba(30,30,30,.92); color: #fff;
   padding: 10px 16px; border-radius: 20px; font-size: 14px; opacity: 0; pointer-events: none; transition: .2s; max-width: 90vw; z-index: 30; }
 #toast.show { opacity: 1; transform: translateX(-50%); }
+.msg.stk .bubble { background: none; box-shadow: none; padding: 0; }
+.msg.stk .ts { display: block; text-align: right; }
+img.sticker { width: 120px; height: 120px; object-fit: contain; display: block; }

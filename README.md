@@ -11,7 +11,7 @@ Bản chạy thử: <https://nguyenhuyhoang.website/app/>
 - Nhiều người dùng, mỗi người quản lý các tài khoản Zalo của mình (đăng ký bằng mã mời)
 - Thêm tài khoản Zalo bằng cách quét mã QR
 - Danh sách hội thoại cá nhân và nhóm, tìm kiếm, tải danh bạ & nhóm
-- Đọc / trả lời tin nhắn chữ, xem ảnh, file, video, tin thoại, liên kết
+- Đọc / trả lời tin nhắn chữ, xem ảnh, sticker, icon cảm xúc Zalo, file, video, tin thoại, liên kết
 - Gửi ảnh từ điện thoại (tự thu nhỏ trước khi gửi)
 - Thông báo push (Android, máy tính; iPhone từ iOS 16.4 khi đã thêm vào màn hình chính)
 - Realtime qua Server-Sent Events, tự kết nối lại
@@ -24,7 +24,7 @@ Bản chạy thử: <https://nguyenhuyhoang.website/app/>
       └────────── Web Push ◀────────────────┘
 ```
 
-Server giữ phiên đăng nhập Zalo Web của từng tài khoản (mã hoá AES-256-GCM trong SQLite), lắng nghe tin nhắn, lưu lại và đẩy thông báo tới thiết bị của chủ tài khoản. Lịch sử chỉ có từ lúc tài khoản được thêm vào app (cộng một ít tin gần đây Zalo trả về khi kết nối).
+Server giữ phiên đăng nhập Zalo Web của từng tài khoản (mã hoá AES-256-GCM trong SQLite), lắng nghe tin nhắn, lưu lại và đẩy thông báo tới thiết bị của chủ tài khoản. Tin cũ: mỗi lần kết nối, app lấy hết phần tin gần đây mà Zalo còn giữ cho phiên web. Khi mở một **nhóm**, app tải thêm tối đa 100 tin gần nhất từ lịch sử nhóm. Với chat **cá nhân**, Zalo không có API lịch sử cho phiên web (Zalo Web phải đồng bộ từ điện thoại), nên tin cũ hơn lúc thêm tài khoản sẽ không có.
 
 **Giới hạn:** Zalo chỉ cho **một phiên Zalo Web** mỗi tài khoản. Mở chat.zalo.me ở nơi khác sẽ đá phiên trong app ra (app sẽ báo và có nút *Kết nối lại*). Zalo PC và app điện thoại không bị ảnh hưởng.
 

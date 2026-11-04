@@ -3,6 +3,7 @@ import { Zalo, ThreadType, LoginQRCallbackEventType } from "zca-js";
 import { db, encrypt, decrypt, now } from "./db.js";
 import { emit, pushToUser } from "./push.js";
 import { httpError } from "./auth.js";
+import { emoticons } from "../public/emoticons.js";
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
 const zaloOpts = { selfListen: true, checkUpdate: false, logging: false };
@@ -27,7 +28,7 @@ function parseContent(msgType, content) {
     case "chat.voice":
       return { kind: "voice", url: c.href };
     case "chat.sticker":
-      return { kind: "sticker", text: "[Sticker]" };
+      return { kind: "sticker", text: "[Sticker]", stickerId: Number(c.id || c.sticker_id) || null };
     case "chat.recommended":
     case "chat.link":
       return { kind: "link", url: c.href, title: c.title, thumb: c.thumb, text: c.description || "" };
@@ -39,7 +40,7 @@ const fmtSize = (n) => (n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.ce
 
 export function preview(m) {
   switch (m.kind) {
-    case "text": return m.text;
+    case "text": return emoticons(m.text);
     case "image": return "[Hình ảnh]" + (m.text ? " " + m.text : "");
     case "file": return "[File] " + (m.title || "");
     case "video": return "[Video]";
@@ -47,6 +48,21 @@ export function preview(m) {
     case "link": return m.title || m.url || "[Liên kết]";
     default: return m.text || "";
   }
+}
+
+// ---------- Ảnh sticker (cache theo id) ----------
+const stickerCache = new Map();
+async function stickerUrl(acc, id) {
+  if (!id) return null;
+  if (stickerCache.has(id)) return stickerCache.get(id);
+  let url = null;
+  try {
+    const [d] = await acc.api.getStickersDetail(id);
+    url = d?.stickerWebpUrl || d?.stickerUrl || null;
+  } catch {}
+  url ||= `https://zalo-api.zadn.vn/api/emoticon/sticker/webpc?eid=${id}&size=130`;
+  stickerCache.set(id, url);
+  return url;
 }
 
 // ---------- Tên & ảnh đại diện của hội thoại (có cache trong bảng threads) ----------
@@ -74,12 +90,19 @@ async function storeMessage(acc, msg, { notify }) {
   const threadId = msg.threadId;
   const p = parseContent(d.msgType, d.content);
   const ts = Number(d.ts) || now();
+  if (p.kind === "sticker") { p.url = await stickerUrl(acc, p.stickerId); delete p.stickerId; }
+  const old = db.prepare("SELECT id, url FROM messages WHERE account_id = ? AND msg_id = ?").get(acc.id, String(d.msgId));
+  if (old) {
+    // tin đã có: chỉ bổ sung ảnh sticker cho tin lưu từ bản cũ
+    if (!old.url && p.url) db.prepare("UPDATE messages SET url = ? WHERE id = ?").run(p.url, old.id);
+    return false;
+  }
   const ins = db.prepare(
     `INSERT OR IGNORE INTO messages (account_id, thread_id, type, msg_id, from_uid, from_name, ts, is_self, kind, text, url, thumb, title)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(acc.id, threadId, type, String(d.msgId), d.uidFrom, d.dName || null, ts, msg.isSelf ? 1 : 0,
         p.kind, p.text ?? null, p.url ?? null, p.thumb ?? null, p.title ?? null);
-  if (!ins.changes) return; // đã có (tin trùng)
+  if (!ins.changes) return false;
 
   const info = await resolveThread(acc, threadId, type, type === ThreadType.User && !msg.isSelf ? d.dName : null);
   const text = preview(p);
@@ -110,11 +133,35 @@ async function storeMessage(acc, msg, { notify }) {
       url: `#/a/${acc.id}/${type}/${threadId}`,
     });
   }
+  return true;
 }
 
 function setStatus(accountId, userId, status, msg = null) {
   db.prepare("UPDATE zalo_accounts SET status = ?, status_msg = ? WHERE id = ?").run(status, msg, accountId);
   emit(userId, "account", { id: accountId, status, statusMsg: msg });
+}
+
+// ---------- Đồng bộ tin cũ ----------
+// Zalo trả tin cũ theo từng trang qua websocket; xin tiếp trang sau bằng msgId cũ nhất của trang trước.
+const OLD_MAX_PAGES = 40;
+function syncOld(acc) {
+  acc.old = { [ThreadType.User]: { pages: 0, oldest: Infinity }, [ThreadType.Group]: { pages: 0, oldest: Infinity } };
+  try { acc.api.listener.requestOldMessages(ThreadType.User); acc.api.listener.requestOldMessages(ThreadType.Group); } catch {}
+}
+async function onOldMessages(acc, list, type) {
+  let added = 0, oldest = null;
+  for (const m of list) {
+    if (await storeMessage(acc, m, { notify: false })) added++;
+    if (!oldest || Number(m.data.ts) < Number(oldest.data.ts)) oldest = m;
+  }
+  const st = acc.old?.[type];
+  console.log(`zalo #${acc.id} tin cũ ${type === ThreadType.Group ? "nhóm" : "cá nhân"}: ${list.length} tin, ${added} mới, trang ${st ? st.pages + 1 : "-"}`);
+  if (!st || !oldest) return;
+  st.pages++;
+  const ts = Number(oldest.data.ts);
+  if (ts >= st.oldest || st.pages >= OLD_MAX_PAGES) return; // hết tin cũ hơn
+  st.oldest = ts;
+  try { acc.api.listener.requestOldMessages(type, String(oldest.data.msgId)); } catch {}
 }
 
 // ---------- Kết nối / lắng nghe ----------
@@ -126,12 +173,10 @@ function attach(accountId, userId, api) {
     acc.retries = 0;
     setStatus(accountId, userId, "online");
     // Lấy lại tin gần đây (lúc server tắt / mới đăng nhập)
-    try { l.requestOldMessages(ThreadType.User); l.requestOldMessages(ThreadType.Group); } catch {}
+    syncOld(acc);
   });
   l.on("message", (m) => storeMessage(acc, m, { notify: true }).catch((e) => console.error("lưu tin lỗi", e)));
-  l.on("old_messages", (list) => {
-    (async () => { for (const m of list) await storeMessage(acc, m, { notify: false }); })().catch((e) => console.error(e));
-  });
+  l.on("old_messages", (list, type) => onOldMessages(acc, list, type).catch((e) => console.error("tin cũ lỗi", e)));
   l.on("error", (e) => console.error(`zalo #${accountId} lỗi`, e?.message || e));
   l.on("closed", (code, reason) => {
     if (live.get(accountId) !== acc) return; // đã được thay thế/gỡ
@@ -337,4 +382,20 @@ export async function syncContacts(user, accountId) {
     }
   } catch (e) { console.error("getAllGroups", e?.message); }
   return { friends, groups };
+}
+
+// Tin cũ của một nhóm (Zalo có API lịch sử cho nhóm; chat cá nhân chỉ có phần tin cũ đồng bộ khi kết nối)
+const historyDone = new Set();
+export async function fetchHistory(user, accountId, type, threadId) {
+  const row = ownAccount(user, accountId);
+  if (Number(type) !== ThreadType.Group) return { added: 0 };
+  const key = `${row.id}:${threadId}`;
+  if (historyDone.has(key)) return { added: 0 };
+  const api = liveApi(user, accountId);
+  const acc = live.get(row.id);
+  const r = await api.getGroupChatHistory(String(threadId), 100);
+  historyDone.add(key);
+  let added = 0;
+  for (const m of r.groupMsgs || []) if (await storeMessage(acc, m, { notify: false })) added++;
+  return { added };
 }
