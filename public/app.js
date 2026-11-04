@@ -57,11 +57,17 @@ function parseRoute() {
   if (h[0] === "login") return { name: "login" };
   if (h[0] === "settings") return { name: "settings" };
   if (h[0] === "admin") return { name: "admin" };
+  if (h[0] === "a" && h[2] === "me") return { name: "profile", acc: Number(h[1]), own: true };
+  if (h[0] === "a" && h[2] === "u" && h[3]) return { name: "profile", acc: Number(h[1]), uid: decodeURIComponent(h[3]), back: "history" };
+  if (h[0] === "a" && h[1] && h[3] && h[4] === "info") return h[2] === "1"
+    ? { name: "group", acc: Number(h[1]), tid: decodeURIComponent(h[3]) }
+    : { name: "profile", acc: Number(h[1]), uid: decodeURIComponent(h[3]), back: `#/a/${h[1]}/0/${h[3]}` };
   if (h[0] === "a" && h[1] && h[3]) return { name: "chat", acc: Number(h[1]), type: Number(h[2]), tid: decodeURIComponent(h[3]) };
   if (h[0] === "a" && h[1]) return { name: "threads", acc: Number(h[1]) };
   return { name: "home" };
 }
 addEventListener("hashchange", render);
+document.addEventListener("click", (e) => { if (e.target.closest("[data-back]")) history.length > 1 ? history.back() : go("#/"); });
 navigator.serviceWorker?.addEventListener("message", (e) => { if (e.data?.type === "open") go(e.data.hash); });
 
 async function render() {
@@ -80,6 +86,8 @@ async function render() {
     }
     if (r.name === "threads") return renderThreads(r.acc);
     if (r.name === "chat") return renderChat(r);
+    if (r.name === "profile") return renderProfile(r);
+    if (r.name === "group") return renderGroupInfo(r);
   } catch (e) { toast(e.message); }
 }
 
@@ -118,7 +126,8 @@ async function loadAccounts() { const r = await api("GET", "accounts"); state.ac
 
 function header(title, { back, right = "" } = {}) {
   return `<header class="bar">
-    ${back ? `<a class="icon-btn" href="${back}" aria-label="Quay lại">‹</a>` : `<span class="icon-btn"></span>`}
+    ${back === "history" ? `<button class="icon-btn" data-back aria-label="Quay lại">‹</button>`
+      : back ? `<a class="icon-btn" href="${back}" aria-label="Quay lại">‹</a>` : `<span class="icon-btn"></span>`}
     <div class="title">${title}</div>${right || `<span class="icon-btn"></span>`}</header>`;
 }
 
@@ -192,6 +201,7 @@ async function renderThreads(accId, q = state.q || "") {
   document.getElementById("reqr")?.addEventListener("click", startQr);
   const setNotify = (body, msg) => api("POST", `accounts/${accId}/notify`, body).then(() => { toast(msg); render(); });
   document.getElementById("menu").onclick = () => sheet([
+    ["👤 Thông tin tài khoản", () => go(`#/a/${accId}/me`)],
     [acc.notify ? "🔕 Tắt thông báo tài khoản này" : "🔔 Bật thông báo tài khoản này",
       () => setNotify({ notify: !acc.notify }, acc.notify ? "Đã tắt thông báo của tài khoản" : "Đã bật thông báo của tài khoản")],
     [acc.notifyGroups ? "🔕 Tắt thông báo tin nhóm" : "🔔 Bật thông báo tin nhóm",
@@ -246,63 +256,98 @@ async function startQr() {
 }
 
 // ---------- khung chat ----------
+const REACTS = ["/-heart", "/-strong", ":>", ":o", ":-((", ":-h"];
+const MORE_REACTS = ["/-rose", "/-ok", "_()_", ";xx", ":-*", ":')", "/-break", "/-weak", "/-v", "/-thanks", ":handclap", "/-bd", "--b", ";-/", "b-)", ":-bye", "/-beer", "/-shit"];
+const EMOJIS = "😀 😁 😂 🤣 😃 😄 😅 😆 😉 😊 😋 😎 😍 😘 🥰 😗 🙂 🤗 🤩 🤔 🤨 😐 😑 😶 🙄 😏 😣 😥 😮 🤐 😯 😪 😫 🥱 😴 😌 😛 😜 😝 🤤 😒 😓 😔 😕 🙃 🤑 😲 🙁 😖 😞 😟 😤 😢 😭 😦 😧 😨 😩 🤯 😬 😰 😱 🥵 🥶 😳 🤪 😵 🥴 😠 😡 🤬 😷 🤒 🤕 🤢 🤮 🤧 😇 🥳 🥺 🤠 🤡 🤥 🤫 🤭 🧐 🤓 😈 💀 👻 👽 🤖 💩 😺 😸 😻 👍 👎 👌 ✌️ 🤞 🤟 🤘 🤙 👋 👏 🙌 👐 🤝 🙏 💪 ❤️ 🧡 💛 💚 💙 💜 🖤 🤍 💔 💕 💞 💓 💗 💖 💘 💝 💯 🔥 ✨ 🌟 🎉 🎊 🎁 🎂 🌹 🌸 🌷 🌻 ☕ 🍺 🍻 🍰 🍜 🍕 🏆 ⚽ 🚗 ✈️ 📞 💰 ✅ ❌ ⭐".split(" ");
+const STICKER_KEYS = ["haha", "yêu", "chào", "cảm ơn", "ok", "buồn", "giận", "hihi", "ngủ", "chúc mừng"];
+const tpath = (r) => `accounts/${r.acc}/threads/${r.type}/${encodeURIComponent(r.tid)}`;
+const reactEmoji = (code) => emoticons(code);
+
 async function renderChat(r) {
   const acc = state.accounts.find((a) => a.id === r.acc);
   if (!acc) return go("#/");
   const [{ messages }, { threads }] = await Promise.all([
-    api("GET", `accounts/${r.acc}/threads/${r.type}/${encodeURIComponent(r.tid)}/messages`),
+    api("GET", `${tpath(r)}/messages`),
     state.threads.length && state.threadsAcc === r.acc ? { threads: state.threads } : api("GET", `accounts/${r.acc}/threads`),
   ]);
   state.threads = threads; state.threadsAcc = r.acc;
   state.messages = messages;
+  state.reply = null;
   const t = threads.find((x) => x.threadId === r.tid && x.type === r.type) || { name: r.tid };
+  const online = acc.status === "online";
   $app.innerHTML = `
-  ${header(`<div class="chat-title">${avatar(t.avatar, t.name, "sm")}<div><div>${esc(t.name)}${t.muted ? " 🔕" : ""}</div><div class="sub small">${esc(acc.name)}</div></div></div>`,
+  ${header(`<a class="chat-title" href="#/a/${r.acc}/${r.type}/${encodeURIComponent(r.tid)}/info">${avatar(t.avatar, t.name, "sm")}<div><div>${esc(t.name)}${t.muted ? " 🔕" : ""}</div><div class="sub small" id="csub">${esc(acc.name)}</div></div></a>`,
     { back: `#/a/${r.acc}`, right: `<button class="icon-btn" id="cmenu" aria-label="Tuỳ chọn">⋯</button>` })}
   <main class="scroll chat" id="msgs">
     ${messages.length >= 60 ? `<div class="center"><button class="link" id="older">Xem tin cũ hơn</button></div>` : ""}
     <div id="mlist">${messages.map((m) => bubble(m, r.type)).join("")}</div>
   </main>
+  <div id="replybar" class="replybar" hidden></div>
+  <div id="panel" class="panel" hidden></div>
   <form class="composer" id="cf">
-    <label class="icon-btn attach" aria-label="Gửi ảnh">📷<input type="file" accept="image/*" id="pic" hidden multiple></label>
-    <textarea id="txt" rows="1" placeholder="Nhập tin nhắn" ${acc.status !== "online" ? "disabled" : ""}></textarea>
+    <button type="button" class="icon-btn" id="emo" aria-label="Sticker và biểu tượng" ${online ? "" : "disabled"}>😊</button>
+    <label class="icon-btn attach" aria-label="Gửi ảnh">🖼<input type="file" accept="image/*" id="pic" hidden multiple ${online ? "" : "disabled"}></label>
+    <label class="icon-btn attach" aria-label="Gửi file">📎<input type="file" id="fil" hidden ${online ? "" : "disabled"}></label>
+    <textarea id="txt" rows="1" placeholder="Nhập tin nhắn" ${online ? "" : "disabled"}></textarea>
     <button class="icon-btn send" type="submit" aria-label="Gửi">➤</button>
   </form>`;
   scrollBottom();
   loadAccounts().catch(() => {}); // cập nhật số trên icon app sau khi đọc
   navigator.serviceWorker?.ready.then((reg) => reg.getNotifications({ tag: `${r.acc}-${r.type}-${r.tid}` }))
     .then((ns) => ns?.forEach((n) => n.close())).catch(() => {});
+  const muteToggle = async () => {
+    await api("POST", `${tpath(r)}/mute`, { muted: !t.muted });
+    t.muted = t.muted ? 0 : 1; toast(t.muted ? "Đã tắt thông báo hội thoại" : "Đã bật thông báo hội thoại"); renderChat(r);
+  };
   document.getElementById("cmenu").onclick = () => sheet([
-    [t.muted ? "🔔 Bật thông báo hội thoại này" : "🔕 Tắt thông báo hội thoại này", async () => {
-      await api("POST", `accounts/${r.acc}/threads/${r.type}/${encodeURIComponent(r.tid)}/mute`, { muted: !t.muted });
-      t.muted = t.muted ? 0 : 1; toast(t.muted ? "Đã tắt thông báo hội thoại" : "Đã bật thông báo hội thoại"); renderChat(r);
-    }],
+    [r.type === 1 ? "👥 Thông tin nhóm" : "👤 Xem trang cá nhân", () => go(`#/a/${r.acc}/${r.type}/${encodeURIComponent(r.tid)}/info`)],
+    [t.muted ? "🔔 Bật thông báo hội thoại này" : "🔕 Tắt thông báo hội thoại này", muteToggle],
   ]);
+
+  // soạn & gửi
   const txt = document.getElementById("txt");
-  txt.oninput = () => { txt.style.height = "auto"; txt.style.height = Math.min(txt.scrollHeight, 140) + "px"; };
+  let lastTyping = 0;
+  txt.oninput = () => {
+    txt.style.height = "auto"; txt.style.height = Math.min(txt.scrollHeight, 140) + "px";
+    if (txt.value && Date.now() - lastTyping > 4000) { lastTyping = Date.now(); api("POST", `${tpath(r)}/typing`).catch(() => {}); }
+  };
   txt.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && !isIOS && !/Android/.test(navigator.userAgent)) { e.preventDefault(); document.getElementById("cf").requestSubmit(); } };
+  txt.onfocus = () => { document.getElementById("panel").hidden = true; };
   document.getElementById("cf").onsubmit = async (e) => {
     e.preventDefault();
     const text = txt.value.trim();
     if (!text) return;
-    txt.value = ""; txt.oninput();
-    try { await api("POST", `accounts/${r.acc}/threads/${r.type}/${encodeURIComponent(r.tid)}/text`, { text }); }
+    const quote = state.reply?.msgId;
+    txt.value = ""; txt.oninput(); setReply(null);
+    try { await api("POST", `${tpath(r)}/text`, { text, quote }); }
     catch (err) { toast(err.message); txt.value = text; }
   };
   document.getElementById("pic").onchange = async (e) => {
     for (const f of e.target.files) {
       try {
         toast("Đang gửi ảnh…", 10000);
-        const img = await prepareImage(f);
-        await api("POST", `accounts/${r.acc}/threads/${r.type}/${encodeURIComponent(r.tid)}/image`, img);
+        await api("POST", `${tpath(r)}/image`, await prepareImage(f));
         toast("Đã gửi ảnh");
       } catch (err) { toast(err.message); }
     }
     e.target.value = "";
   };
+  document.getElementById("fil").onchange = async (e) => {
+    const f = e.target.files[0]; e.target.value = "";
+    if (!f) return;
+    if (f.size > 20 * 1048576) return toast("File tối đa 20MB");
+    try {
+      toast("Đang gửi file…", 30000);
+      const data = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result.split(",")[1]); fr.onerror = rej; fr.readAsDataURL(f); });
+      await api("POST", `${tpath(r)}/file`, { data, filename: f.name });
+      toast("Đã gửi file");
+    } catch (err) { toast(err.message); }
+  };
+  document.getElementById("emo").onclick = () => togglePanel(r);
+
   document.getElementById("older")?.addEventListener("click", async () => {
     const before = state.messages[0]?.ts;
-    const { messages: older } = await api("GET", `accounts/${r.acc}/threads/${r.type}/${encodeURIComponent(r.tid)}/messages?before=${before}`);
+    const { messages: older } = await api("GET", `${tpath(r)}/messages?before=${before}`);
     state.messages = older.concat(state.messages);
     const box = document.getElementById("msgs"), h = box.scrollHeight;
     document.getElementById("mlist").insertAdjacentHTML("afterbegin", older.map((m) => bubble(m, r.type)).join(""));
@@ -310,35 +355,241 @@ async function renderChat(r) {
     if (older.length < 60) document.getElementById("older").remove();
   });
   // Nhóm: lấy thêm lịch sử từ Zalo (một lần mỗi nhóm), có tin mới thì vẽ lại
-  if (r.type === 1 && acc.status === "online" && !renderChat.hist?.has(r.acc + ":" + r.tid)) {
+  if (r.type === 1 && online && !renderChat.hist?.has(r.acc + ":" + r.tid)) {
     (renderChat.hist ||= new Set()).add(r.acc + ":" + r.tid);
     api("POST", `accounts/${r.acc}/threads/1/${encodeURIComponent(r.tid)}/history`)
       .then((h) => { if (h.added && state.route?.name === "chat" && state.route.tid === r.tid) renderChat(r); }).catch(() => {});
   }
-  // ảnh: bấm để xem lớn
-  document.getElementById("msgs").onclick = (e) => {
+
+  // bấm vào tin: xem ảnh, mở trang cá nhân người gửi, thả nhanh cảm xúc; giữ lâu / chuột phải: menu thao tác
+  const box = document.getElementById("msgs");
+  box.onclick = (e) => {
     const im = e.target.closest("img.photo");
-    if (im) { const v = document.createElement("div"); v.className = "viewer"; v.innerHTML = `<img src="${esc(im.dataset.full)}" referrerpolicy="no-referrer" alt="">`; v.onclick = () => v.remove(); document.body.appendChild(v); }
+    if (im) { const v = document.createElement("div"); v.className = "viewer"; v.innerHTML = `<img src="${esc(im.dataset.full)}" referrerpolicy="no-referrer" alt="">`; v.onclick = () => v.remove(); document.body.appendChild(v); return; }
+    const from = e.target.closest("[data-uid]");
+    if (from) return go(`#/a/${r.acc}/u/${encodeURIComponent(from.dataset.uid)}`);
+    const rx = e.target.closest(".rx");
+    if (rx) return showReactors(rx.closest(".msg").dataset.mid);
+    const more = e.target.closest(".more");
+    if (more) return msgActions(r, more.closest(".msg").dataset.mid);
+    const q = e.target.closest(".quote");
+    if (q?.dataset.q) document.querySelector(`.msg[data-mid="${CSS.escape(q.dataset.q)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  };
+  box.oncontextmenu = (e) => { const m = e.target.closest(".msg[data-mid]"); if (m) { e.preventDefault(); msgActions(r, m.dataset.mid); } };
+  let press;
+  box.addEventListener("touchstart", (e) => {
+    const m = e.target.closest(".bubble")?.closest(".msg[data-mid]");
+    if (!m) return;
+    press = setTimeout(() => { press = null; navigator.vibrate?.(15); msgActions(r, m.dataset.mid); }, 450);
+  }, { passive: true });
+  const cancel = () => { clearTimeout(press); press = null; };
+  box.addEventListener("touchend", cancel); box.addEventListener("touchmove", cancel, { passive: true });
+}
+
+function setReply(m) {
+  state.reply = m;
+  const bar = document.getElementById("replybar");
+  if (!bar) return;
+  bar.hidden = !m;
+  if (m) {
+    bar.innerHTML = `<div class="grow"><b>Trả lời ${esc(m.isSelf ? "chính mình" : m.fromName || "")}</b><div class="small muted ell">${esc(previewOf(m))}</div></div><button class="icon-btn" id="rx0" aria-label="Huỷ trả lời">✕</button>`;
+    bar.querySelector("#rx0").onclick = () => setReply(null);
+    document.getElementById("txt")?.focus();
+  }
+}
+const previewOf = (m) => ({ image: "[Hình ảnh]", sticker: "[Sticker]", file: "[File] " + (m.title || ""), video: "[Video]", voice: "[Tin nhắn thoại]", link: m.title || m.url, recalled: "Tin nhắn đã thu hồi" }[m.kind] ?? emoticons(m.text || ""));
+
+function msgActions(r, mid) {
+  const m = state.messages.find((x) => x.msgId === mid);
+  if (!m || m.kind === "recalled") return;
+  const acc = state.accounts.find((a) => a.id === r.acc);
+  const online = acc?.status === "online";
+  const mine = (m.reactions || []).find((x) => x.uid === acc?.zaloUid)?.icon;
+  const el = document.createElement("div");
+  el.className = "sheet-bg";
+  const items = [
+    online && ["↩️ Trả lời", () => setReply(m)],
+    m.text && ["📋 Sao chép", () => navigator.clipboard.writeText(m.text).then(() => toast("Đã sao chép"))],
+    (m.media || m.url) && m.kind !== "sticker" && ["⬇️ Mở / tải về", () => window.open(m.media ? `api/media/${m.id}` : m.url, "_blank", "noopener")],
+    online && m.isSelf && ["↶ Thu hồi", async () => { if (confirm("Thu hồi tin nhắn này với mọi người?")) await api("POST", `accounts/${r.acc}/messages/${mid}/recall`).catch((e) => toast(e.message)); }],
+    ["🗑 Xoá ở phía tôi", async () => {
+      if (!confirm("Xoá tin nhắn này ở phía bạn?")) return;
+      await api("DELETE", `accounts/${r.acc}/messages/${mid}`).catch((e) => toast(e.message));
+      state.messages = state.messages.filter((x) => x.msgId !== mid);
+      document.querySelector(`.msg[data-mid="${CSS.escape(mid)}"]`)?.remove();
+    }, "danger"],
+  ].filter(Boolean);
+  el.innerHTML = `<div class="sheet">
+    ${online ? `<div class="reacts">${REACTS.map((c) => `<button class="react ${mine === c ? "on" : ""}" data-r="${esc(c)}">${reactEmoji(c)}</button>`).join("")}<button class="react" data-r="+">＋</button></div>
+    <div class="reacts more-reacts" hidden>${MORE_REACTS.map((c) => `<button class="react ${mine === c ? "on" : ""}" data-r="${esc(c)}">${reactEmoji(c)}</button>`).join("")}</div>` : ""}
+    <div class="sheet-preview small muted ell">${esc(previewOf(m))}</div>
+    ${items.map(([t, , cls], i) => `<button class="sheet-item ${cls || ""}" data-i="${i}">${esc(t)}</button>`).join("")}
+    <button class="sheet-item cancel">Huỷ</button></div>`;
+  el.onclick = async (e) => {
+    const rb = e.target.closest("[data-r]");
+    if (rb) {
+      if (rb.dataset.r === "+") { el.querySelector(".more-reacts").hidden = false; rb.remove(); return; }
+      el.remove();
+      const icon = rb.dataset.r === mine ? "" : rb.dataset.r; // bấm lại cảm xúc cũ = bỏ
+      try { const res = await api("POST", `accounts/${r.acc}/messages/${mid}/react`, { icon }); updateMsg(mid, { reactions: res.reactions }); }
+      catch (err) { toast(err.message); }
+      return;
+    }
+    if (e.target.closest(".reacts")) return;
+    const i = e.target.dataset?.i;
+    el.remove();
+    if (i !== undefined) items[i][1]();
+  };
+  document.body.appendChild(el);
+}
+
+function showReactors(mid) {
+  const m = state.messages.find((x) => x.msgId === mid);
+  if (!m?.reactions?.length) return;
+  const acc = state.accounts.find((a) => a.id === state.route.acc);
+  toast(m.reactions.map((x) => `${reactEmoji(x.icon)} ${x.uid === acc?.zaloUid ? "Bạn" : x.name || "Thành viên"}`).join(" · "), 5000);
+}
+
+function updateMsg(mid, patch) {
+  const m = state.messages.find((x) => x.msgId === mid);
+  if (!m) return;
+  Object.assign(m, patch);
+  const el = document.querySelector(`.msg[data-mid="${CSS.escape(mid)}"]`);
+  if (el) el.outerHTML = bubble(m, state.route.type);
+}
+
+// bảng sticker / emoji
+async function togglePanel(r) {
+  const p = document.getElementById("panel");
+  if (!p.hidden) { p.hidden = true; return; }
+  p.hidden = false;
+  document.getElementById("txt").blur();
+  const tab = state.panelTab || "sticker";
+  p.innerHTML = `<div class="tabs"><button data-tab="sticker" class="${tab === "sticker" ? "on" : ""}">Sticker</button><button data-tab="emoji" class="${tab === "emoji" ? "on" : ""}">Emoji</button></div><div id="pbody" class="pbody"></div>`;
+  p.querySelectorAll("[data-tab]").forEach((b) => b.onclick = () => { state.panelTab = b.dataset.tab; p.hidden = true; togglePanel(r); });
+  const body = p.querySelector("#pbody");
+  if (tab === "emoji") {
+    body.innerHTML = `<div class="emoji-grid">${EMOJIS.map((e) => `<button type="button">${e}</button>`).join("")}</div>`;
+    body.onclick = (e) => {
+      const b = e.target.closest("button"); if (!b) return;
+      const txt = document.getElementById("txt"), s = txt.selectionStart ?? txt.value.length;
+      txt.value = txt.value.slice(0, s) + b.textContent + txt.value.slice(txt.selectionEnd ?? s);
+      txt.selectionStart = txt.selectionEnd = s + b.textContent.length;
+      txt.oninput();
+    };
+    return;
+  }
+  body.innerHTML = `<input type="search" id="sq" placeholder="Tìm sticker (vd: haha, yêu, chào)">
+    <div class="chips">${STICKER_KEYS.map((k) => `<button type="button" data-k="${esc(k)}">${esc(k)}</button>`).join("")}</div>
+    <div id="sgrid" class="sticker-grid"><div class="spinner"></div></div>`;
+  const grid = body.querySelector("#sgrid");
+  const load = async (q) => {
+    grid.innerHTML = `<div class="spinner"></div>`;
+    try {
+      let { stickers } = await api("GET", `accounts/${r.acc}/stickers${q ? "?q=" + encodeURIComponent(q) : ""}`);
+      if (!q && !stickers.length) return load("haha");
+      grid.innerHTML = (!q ? `<div class="small muted full">Đã dùng gần đây</div>` : "") +
+        (stickers.map((s) => `<button type="button" data-s='${esc(JSON.stringify({ id: s.id, cateId: s.cateId, type: s.type }))}'><img src="${safeUrl(s.url)}" loading="lazy" referrerpolicy="no-referrer" alt=""></button>`).join("") || `<p class="muted small">Không tìm thấy sticker</p>`);
+    } catch (e) { grid.innerHTML = `<p class="muted small">${esc(e.message)}</p>`; }
+  };
+  load("");
+  const sq = body.querySelector("#sq");
+  sq.oninput = () => { clearTimeout(sq.t); sq.t = setTimeout(() => load(sq.value.trim()), 400); };
+  body.onclick = async (e) => {
+    const k = e.target.closest("[data-k]"); if (k) { sq.value = k.dataset.k; return load(k.dataset.k); }
+    const b = e.target.closest("[data-s]"); if (!b) return;
+    try { await api("POST", `${tpath(r)}/sticker`, JSON.parse(b.dataset.s)); } catch (err) { toast(err.message); }
   };
 }
 
 function bubble(m, type) {
   let body;
-  switch (m.kind) {
+  const kind = m.recalled ? "recalled" : m.kind;
+  switch (kind) {
     case "image": body = `<img class="photo" src="${mediaSrc(m, m.thumb || m.url)}" data-full="${mediaSrc(m, m.url || m.thumb)}" referrerpolicy="no-referrer" loading="lazy" alt="Ảnh">${m.text ? `<div>${esc(m.text)}</div>` : ""}`; break;
     case "file": body = `<a class="file" href="${mediaSrc(m, m.url)}" target="_blank" rel="noopener noreferrer">📎 ${esc(m.title || "Tệp")}<span class="small muted"> ${esc(m.text || "")}${m.media ? " · đã lưu" : ""}</span></a>`; break;
     case "video": body = m.media ? `<video controls preload="metadata" playsinline src="${mediaSrc(m)}"></video>` : `<a class="file" href="${safeUrl(m.url)}" target="_blank" rel="noopener noreferrer">🎬 Video</a>`; break;
     case "voice": body = m.url || m.media ? `<audio controls preload="none" src="${mediaSrc(m, m.url)}"></audio>` : "[Tin nhắn thoại]"; break;
     case "link": body = `<a class="file" href="${safeUrl(m.url)}" target="_blank" rel="noopener noreferrer">🔗 ${esc(m.title || m.url)}</a>${m.text ? `<div class="small">${esc(m.text)}</div>` : ""}`; break;
     case "sticker": body = m.url ? `<img class="sticker" src="${safeUrl(m.url)}" referrerpolicy="no-referrer" loading="lazy" alt="Sticker">` : "[Sticker]"; break;
+    case "recalled": body = `<i class="muted">Tin nhắn đã được thu hồi</i>`; break;
     default: body = linkify(esc(emoticons(m.text || "")));
   }
-  return `<div class="msg ${m.isSelf ? "me" : ""} ${m.kind === "sticker" && m.url ? "stk" : ""}">
-    ${type === 1 && !m.isSelf ? `<div class="from">${esc(m.fromName || "")}</div>` : ""}
-    <div class="bubble">${body}<span class="ts">${new Date(m.ts).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}</span></div></div>`;
+  const q = m.quote && kind !== "recalled" ? `<div class="quote" data-q="${esc(m.quote.msgId || "")}"><b>${esc(m.quote.name)}</b><div class="ell">${esc(emoticons(m.quote.text))}</div></div>` : "";
+  // gom cảm xúc: ❤️ 2 👍 1
+  const counts = {};
+  for (const x of m.reactions || []) counts[x.icon] = (counts[x.icon] || 0) + 1;
+  const rx = Object.keys(counts).length ? `<button class="rx">${Object.entries(counts).map(([i, n]) => `${reactEmoji(i)}${n > 1 ? `<small>${n}</small>` : ""}`).join(" ")}</button>` : "";
+  return `<div class="msg ${m.isSelf ? "me" : ""} ${kind === "sticker" && m.url ? "stk" : ""} ${rx ? "has-rx" : ""}" data-mid="${esc(m.msgId)}">
+    ${type === 1 && !m.isSelf ? `<button class="from" data-uid="${esc(m.fromUid)}">${esc(m.fromName || "")}</button>` : ""}
+    <div class="brow"><div class="bubble">${q}${body}<span class="ts">${new Date(m.ts).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}</span>${rx}</div>
+    ${kind !== "recalled" ? `<button class="more" aria-label="Thao tác">⋯</button>` : ""}</div></div>`;
 }
 const linkify = (s) => s.replace(/https?:\/\/[^\s<]+/g, (u) => `<a href="${u}" target="_blank" rel="noopener noreferrer">${u}</a>`).replace(/\n/g, "<br>");
 function scrollBottom() { const b = document.getElementById("msgs"); if (b) b.scrollTop = b.scrollHeight; }
+
+// ---------- trang cá nhân / thông tin nhóm ----------
+const GENDER = { 0: "Nam", 1: "Nữ" };
+async function renderProfile(r) {
+  const acc = state.accounts.find((a) => a.id === r.acc);
+  if (!acc) return go("#/");
+  const back = r.back || `#/a/${r.acc}`;
+  $app.innerHTML = `${header("Đang tải…", { back })}<main class="scroll"><div class="center pad"><div class="spinner"></div></div></main>`;
+  let p;
+  try {
+    p = r.own ? await api("GET", `accounts/${r.acc}/profile`) : await api("GET", `accounts/${r.acc}/users/${encodeURIComponent(r.uid)}`);
+  } catch (e) {
+    $app.querySelector("main").innerHTML = `<p class="center muted pad">${esc(e.message)}</p>`; return;
+  }
+  const rows = [
+    ["Giới tính", GENDER[p.gender]], ["Ngày sinh", p.dob], ["Điện thoại", p.phone],
+    ["Tên Zalo", p.zaloName !== p.name ? p.zaloName : ""],
+    ["Hoạt động", p.lastActive ? timeLabel(p.lastActive) : ""],
+  ].filter(([, v]) => v);
+  $app.innerHTML = `
+  ${header(r.own ? "Tài khoản của tôi" : "Trang cá nhân", { back })}
+  <main class="scroll">
+    <div class="profile">
+      <div class="cover" ${p.cover ? `style="background-image:url('${safeUrl(p.cover)}')"` : ""}></div>
+      ${avatar(p.avatar, p.name, "lg")}
+      <h2>${esc(p.name)}</h2>
+      ${p.status ? `<p class="bio">${esc(p.status)}</p>` : ""}
+      ${!r.own ? `<div class="pad"><a class="btn primary" href="#/a/${r.acc}/0/${encodeURIComponent(p.uid)}">💬 Nhắn tin</a></div>` : ""}
+    </div>
+    <section class="card mx"><h3>Thông tin</h3>
+      ${rows.length ? `<dl class="info">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>` : `<p class="muted small">Người này ẩn thông tin cá nhân.</p>`}
+    </section>
+    <p class="muted small pad">Nhật ký (tường) chưa xem được: Zalo không mở chức năng này cho Zalo Web.</p>
+  </main>`;
+}
+
+async function renderGroupInfo(r) {
+  const acc = state.accounts.find((a) => a.id === r.acc);
+  if (!acc) return go("#/");
+  const back = `#/a/${r.acc}/1/${encodeURIComponent(r.tid)}`;
+  $app.innerHTML = `${header("Thông tin nhóm", { back })}<main class="scroll"><div class="center pad"><div class="spinner"></div></div></main>`;
+  let g;
+  try { g = await api("GET", `accounts/${r.acc}/groups/${encodeURIComponent(r.tid)}`); }
+  catch (e) { $app.querySelector("main").innerHTML = `<p class="center muted pad">${esc(e.message)}</p>`; return; }
+  const t = state.threads.find((x) => x.threadId === r.tid && x.type === 1) || {};
+  $app.innerHTML = `
+  ${header("Thông tin nhóm", { back })}
+  <main class="scroll">
+    <div class="profile">${avatar(g.avatar, g.name, "lg")}<h2>${esc(g.name)}</h2>
+      ${g.desc ? `<p class="bio">${esc(g.desc)}</p>` : ""}
+      <p class="muted small">${g.total || g.members.length} thành viên${g.created ? " · tạo " + new Date(g.created).toLocaleDateString("vi-VN") : ""}</p>
+      <div class="pad"><button class="btn" id="gm">${t.muted ? "🔔 Bật thông báo" : "🔕 Tắt thông báo"}</button></div>
+    </div>
+    <section class="card mx"><h3>Thành viên${g.members.length < g.total ? ` (hiện ${g.members.length})` : ""}</h3>
+      <ul class="list">${g.members.map((m) => `<li><a class="row" href="#/a/${r.acc}/u/${encodeURIComponent(m.uid)}">${avatar(m.avatar, m.name, "sm")}
+        <div class="grow"><div class="name">${esc(m.name || m.uid)}</div>${m.role ? `<div class="sub small">${esc(m.role)}</div>` : ""}</div></a></li>`).join("")}</ul>
+    </section>
+  </main>`;
+  document.getElementById("gm").onclick = async () => {
+    await api("POST", `accounts/${r.acc}/threads/1/${encodeURIComponent(r.tid)}/mute`, { muted: !t.muted });
+    state.threads = []; toast(t.muted ? "Đã bật thông báo" : "Đã tắt thông báo"); go(back);
+  };
+}
 
 // Thu nhỏ ảnh (tối đa 2560px, JPEG) trước khi gửi để nhanh hơn
 async function prepareImage(file) {
@@ -553,6 +804,16 @@ function startEvents() {
     if (a) { a.status = d.status; a.statusMsg = d.statusMsg; }
     if (state.route?.name !== "chat") { clearTimeout(startEvents.t); startEvents.t = setTimeout(render, 300); }
     else { const t = document.getElementById("txt"); if (t) t.disabled = d.status !== "online"; }
+  });
+  const inChat = (d) => state.route?.name === "chat" && state.route.acc === d.accountId && state.route.tid === d.threadId && state.route.type === d.type;
+  es.addEventListener("reaction", (e) => { const d = JSON.parse(e.data); if (inChat(d)) updateMsg(d.msgId, { reactions: d.reactions }); });
+  es.addEventListener("recall", (e) => { const d = JSON.parse(e.data); if (inChat(d)) updateMsg(d.msgId, { recalled: 1 }); });
+  es.addEventListener("typing", (e) => {
+    const d = JSON.parse(e.data); if (!inChat(d)) return;
+    const sub = document.getElementById("csub"); if (!sub) return;
+    const acc = state.accounts.find((a) => a.id === d.accountId);
+    sub.textContent = "đang soạn tin…"; sub.classList.add("typing");
+    clearTimeout(startEvents.ty); startEvents.ty = setTimeout(() => { sub.textContent = acc?.name || ""; sub.classList.remove("typing"); }, 6000);
   });
   es.addEventListener("qr", (e) => { const d = JSON.parse(e.data); if (state.qr?.key === d.key) state.qr.on(d); });
 }

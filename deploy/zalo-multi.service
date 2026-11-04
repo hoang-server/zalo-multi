@@ -2,8 +2,8 @@
 # Xem nhật ký: journalctl -u zalo-multi -f
 [Unit]
 Description=Zalo Multi - nhieu tai khoan Zalo tren mot web app
-After=network-online.target
-Wants=network-online.target
+After=network-online.target zalo-media.service
+Wants=network-online.target zalo-media.service
 
 [Service]
 Type=simple
@@ -14,6 +14,8 @@ Environment=HOST=127.0.0.1
 Environment=BASE_PATH=/app
 # Dữ liệu (DB, khoá mã hoá, khoá VAPID) nằm ở /var/lib/zalo-multi, không bị xoá khi cập nhật code
 Environment=DATA_DIR=/var/lib/zalo-multi
+# Ảnh/file lưu trên Google Drive (gắn bằng deploy/zalo-media.service). Bỏ dòng này để lưu ngay trong DATA_DIR/media
+Environment=MEDIA_DIR=/mnt/zalo-media
 # Email liên hệ gửi kèm push (bắt buộc theo chuẩn Web Push); có thể đặt trong /etc/zalo-multi.env
 Environment=VAPID_SUBJECT=mailto:admin@example.com
 EnvironmentFile=-/etc/zalo-multi.env
@@ -24,7 +26,10 @@ Restart=always
 RestartSec=3
 TimeoutStopSec=10
 
-DynamicUser=yes
+# useradd --system --no-create-home --shell /usr/sbin/nologin zalo-multi
+User=zalo-multi
+Group=zalo-multi
+ReadWritePaths=-/mnt/zalo-media
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

@@ -4,10 +4,13 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { DATA_DIR } from "./config.js";
+import { MEDIA_DIR as DIR } from "./config.js";
 import { db, getSetting } from "./db.js";
 
-export const MEDIA_DIR = path.join(DATA_DIR, "media");
+export const MEDIA_DIR = path.resolve(DIR);
+// Với Google Drive: chỉ lưu khi Drive đang được gắn (có file đánh dấu .drive), tránh ghi nhầm vào ổ server
+const external = !!process.env.MEDIA_DIR;
+export const mediaReady = () => !external || fs.existsSync(path.join(MEDIA_DIR, ".drive"));
 const EXT_BY_TYPE = {
   "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif",
   "video/mp4": ".mp4", "video/quicktime": ".mov", "audio/aac": ".aac", "audio/mpeg": ".mp3", "audio/mp4": ".m4a", "audio/amr": ".amr",
@@ -18,7 +21,7 @@ Object.assign(TYPE_BY_EXT, { ".jpeg": "image/jpeg", ".heic": "image/heic", ".txt
 const okExt = (e) => /^\.[a-z0-9]{1,6}$/.test(e) ? e : "";
 
 export async function saveMedia(accountId, msgRowId, p) {
-  if (!getSetting("media_store") || !/^https:\/\//i.test(p.url || "")) return;
+  if (!getSetting("media_store") || !/^https:\/\//i.test(p.url || "") || !mediaReady()) return;
   const max = getSetting("media_max_mb") * 1048576;
   const r = await fetch(p.url, { signal: AbortSignal.timeout(120e3) });
   if (!r.ok || !r.body) throw new Error("HTTP " + r.status);
@@ -75,7 +78,9 @@ export function removeMediaOfAccount(accountId) {
   fs.rmSync(path.join(MEDIA_DIR, String(Number(accountId))), { recursive: true, force: true });
 }
 
+let usageCache = null;
 export function mediaUsage() {
+  if (usageCache && Date.now() - usageCache.at < 600e3) return usageCache.v;
   let bytes = 0, files = 0;
   const walk = (d) => {
     for (const e of fs.existsSync(d) ? fs.readdirSync(d, { withFileTypes: true }) : []) {
@@ -84,5 +89,6 @@ export function mediaUsage() {
     }
   };
   walk(MEDIA_DIR);
-  return { bytes, files };
+  usageCache = { at: Date.now(), v: { bytes, files, drive: external, ready: mediaReady() } };
+  return usageCache.v;
 }

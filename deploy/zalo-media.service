@@ -1,0 +1,23 @@
+# Thay ZALO_UID/ZALO_GID bằng: id -u zalo-multi / id -g zalo-multi. Cần remote rclone "gdrive" (rclone config).
+# Gắn thư mục Google Drive "zalo-multi-media" vào /mnt/zalo-media để Zalo Multi lưu ảnh/file thẳng lên Drive.
+# Bộ đệm cục bộ tối đa 2GB (file hay xem), phần còn lại chỉ nằm trên Drive.
+[Unit]
+Description=Google Drive cho Zalo Multi (rclone mount)
+After=network-online.target
+Wants=network-online.target
+Before=zalo-multi.service
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/rclone mount gdrive:zalo-multi-media /mnt/zalo-media \
+  --config /root/.config/rclone/rclone.conf \
+  --allow-other --uid ZALO_UID --gid ZALO_GID --umask 077 \
+  --vfs-cache-mode full --vfs-cache-max-size 2G --vfs-cache-max-age 168h \
+  --cache-dir /var/cache/rclone-zalo --dir-cache-time 1h \
+  --drive-chunk-size 32M --log-level NOTICE
+ExecStop=/bin/fusermount3 -uz /mnt/zalo-media
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

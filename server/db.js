@@ -94,6 +94,19 @@ addColumn("zalo_accounts", "notify INTEGER NOT NULL DEFAULT 1");
 addColumn("zalo_accounts", "notify_groups INTEGER NOT NULL DEFAULT 1");
 addColumn("threads", "muted INTEGER NOT NULL DEFAULT 0");
 addColumn("messages", "media TEXT");             // tên file ảnh/file đã lưu trên server
+addColumn("messages", "cli_msg_id TEXT");
+addColumn("messages", "raw TEXT");               // JSON tối thiểu của tin Zalo: cần để trả lời, thả cảm xúc, thu hồi, báo đã xem
+addColumn("messages", "quote TEXT");             // JSON { name, text } của tin được trả lời
+addColumn("messages", "recalled INTEGER NOT NULL DEFAULT 0");
+db.exec(`CREATE TABLE IF NOT EXISTS reactions (
+  account_id INTEGER NOT NULL REFERENCES zalo_accounts(id) ON DELETE CASCADE,
+  msg_id TEXT NOT NULL,
+  uid TEXT NOT NULL,
+  icon TEXT NOT NULL,
+  name TEXT,
+  ts INTEGER NOT NULL,
+  PRIMARY KEY (account_id, msg_id, uid)
+)`);
 
 // Cài đặt chung do quản trị viên chỉnh (giá trị mặc định ở đây; thêm tính năng mới chỉ cần thêm khoá)
 export const SETTING_DEFAULTS = {

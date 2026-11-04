@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { Zalo, ThreadType, LoginQRCallbackEventType } from "zca-js";
+import { Zalo, ThreadType, LoginQRCallbackEventType, Reactions } from "zca-js";
 import { db, encrypt, decrypt, now, getSetting } from "./db.js";
 import { saveMedia, removeMediaOfAccount } from "./media.js";
 import { emit, pushToUser } from "./push.js";
@@ -29,7 +29,7 @@ function parseContent(msgType, content) {
     case "chat.voice":
       return { kind: "voice", url: c.href };
     case "chat.sticker":
-      return { kind: "sticker", text: "[Sticker]", stickerId: Number(c.id || c.sticker_id) || null };
+      return { kind: "sticker", text: "[Sticker]", stickerId: Number(c.id || c.sticker_id) || null, title: JSON.stringify({ id: Number(c.id), cateId: Number(c.catId ?? c.cateId), type: Number(c.type) }) };
     case "chat.recommended":
     case "chat.link":
       return { kind: "link", url: c.href, title: c.title, thumb: c.thumb, text: c.description || "" };
@@ -49,6 +49,20 @@ export function preview(m) {
     case "link": return m.title || m.url || "[Liên kết]";
     default: return m.text || "";
   }
+}
+
+// Phần tin gốc cần giữ để trả lời (quote), thả cảm xúc, thu hồi, báo đã xem
+const rawOf = (d) => JSON.stringify({
+  msgId: String(d.msgId), cliMsgId: String(d.cliMsgId ?? ""), uidFrom: String(d.uidFrom), idTo: String(d.idTo ?? ""),
+  msgType: d.msgType, content: d.content, propertyExt: d.propertyExt, ttl: d.ttl ?? 0, ts: String(d.ts),
+  st: d.st, at: d.at, cmd: d.cmd,
+});
+function quoteOf(d) {
+  const q = d.quote;
+  if (!q) return null;
+  let text = q.msg || "";
+  if (!text && q.attach) { try { const a = JSON.parse(q.attach); text = a.title || (a.href ? "[Đính kèm]" : ""); } catch { text = "[Đính kèm]"; } }
+  return JSON.stringify({ name: q.fromD || "", text: text || "[Tin nhắn]", msgId: String(q.globalMsgId || "") });
 }
 
 // ---------- Ảnh sticker (cache theo id) ----------
@@ -92,17 +106,20 @@ async function storeMessage(acc, msg, { notify }) {
   const p = parseContent(d.msgType, d.content);
   const ts = Number(d.ts) || now();
   if (p.kind === "sticker") { p.url = await stickerUrl(acc, p.stickerId); delete p.stickerId; }
-  const old = db.prepare("SELECT id, url FROM messages WHERE account_id = ? AND msg_id = ?").get(acc.id, String(d.msgId));
+  const old = db.prepare("SELECT id, url, raw FROM messages WHERE account_id = ? AND msg_id = ?").get(acc.id, String(d.msgId));
   if (old) {
-    // tin đã có: chỉ bổ sung ảnh sticker cho tin lưu từ bản cũ
+    // tin đã có: bổ sung phần còn thiếu cho tin lưu từ bản cũ
     if (!old.url && p.url) db.prepare("UPDATE messages SET url = ? WHERE id = ?").run(p.url, old.id);
+    if (!old.raw) db.prepare("UPDATE messages SET raw = ?, cli_msg_id = ?, quote = ?, title = COALESCE(title, ?) WHERE id = ?")
+      .run(rawOf(d), d.cliMsgId ? String(d.cliMsgId) : null, quoteOf(d), p.kind === "sticker" ? p.title : null, old.id);
     return false;
   }
   const ins = db.prepare(
-    `INSERT OR IGNORE INTO messages (account_id, thread_id, type, msg_id, from_uid, from_name, ts, is_self, kind, text, url, thumb, title)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT OR IGNORE INTO messages (account_id, thread_id, type, msg_id, from_uid, from_name, ts, is_self, kind, text, url, thumb, title, cli_msg_id, raw, quote)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(acc.id, threadId, type, String(d.msgId), d.uidFrom, d.dName || null, ts, msg.isSelf ? 1 : 0,
-        p.kind, p.text ?? null, p.url ?? null, p.thumb ?? null, p.title ?? null);
+        p.kind, p.text ?? null, p.url ?? null, p.thumb ?? null, p.title ?? null, d.cliMsgId ? String(d.cliMsgId) : null,
+        rawOf(d), quoteOf(d));
   if (!ins.changes) return false;
 
   const info = await resolveThread(acc, threadId, type, type === ThreadType.User && !msg.isSelf ? d.dName : null);
@@ -119,7 +136,7 @@ async function storeMessage(acc, msg, { notify }) {
 
   const out = {
     id: Number(ins.lastInsertRowid), accountId: acc.id, threadId, type, msgId: String(d.msgId), fromUid: d.uidFrom, fromName: d.dName,
-    ts, isSelf: msg.isSelf, ...p,
+    ts, isSelf: msg.isSelf, ...p, quote: quoteOf(d) ? JSON.parse(quoteOf(d)) : null, reactions: [],
   };
   emit(acc.userId, "message", { ...out, threadName: info.name, threadAvatar: info.avatar });
 
@@ -171,7 +188,11 @@ function setStatus(accountId, userId, status, msg = null) {
 const OLD_MAX_PAGES = 40;
 function syncOld(acc) {
   acc.old = { [ThreadType.User]: { pages: 0, oldest: Infinity }, [ThreadType.Group]: { pages: 0, oldest: Infinity } };
-  try { acc.api.listener.requestOldMessages(ThreadType.User); acc.api.listener.requestOldMessages(ThreadType.Group); } catch {}
+  try {
+    const l = acc.api.listener;
+    l.requestOldMessages(ThreadType.User); l.requestOldMessages(ThreadType.Group);
+    l.requestOldReactions(ThreadType.User); l.requestOldReactions(ThreadType.Group);
+  } catch {}
 }
 async function onOldMessages(acc, list, type) {
   let added = 0, oldest = null;
@@ -202,6 +223,10 @@ function attach(accountId, userId, api) {
   });
   l.on("message", (m) => storeMessage(acc, m, { notify: true }).catch((e) => console.error("lưu tin lỗi", e)));
   l.on("old_messages", (list, type) => onOldMessages(acc, list, type).catch((e) => console.error("tin cũ lỗi", e)));
+  l.on("reaction", (r) => { try { handleReaction(acc, r); } catch (e) { console.error("cảm xúc lỗi", e); } });
+  l.on("old_reactions", (list) => { for (const r of list) try { handleReaction(acc, r, true); } catch {} });
+  l.on("undo", (u) => { try { handleUndo(acc, u); } catch (e) { console.error("thu hồi lỗi", e); } });
+  l.on("typing", (t) => emit(userId, "typing", { accountId, threadId: String(t.threadId), type: t.type, uid: String(t.data?.uid || "") }));
   l.on("error", (e) => console.error(`zalo #${accountId} lỗi`, e?.message || e));
   l.on("closed", (code, reason) => {
     if (live.get(accountId) !== acc) return; // đã được thay thế/gỡ
@@ -330,7 +355,7 @@ function liveApi(user, accountId) {
 
 export function listAccounts(user) {
   return db.prepare(
-    `SELECT a.id, a.name, a.avatar, a.status, a.status_msg statusMsg, a.notify, a.notify_groups notifyGroups,
+    `SELECT a.id, a.zalo_uid zaloUid, a.name, a.avatar, a.status, a.status_msg statusMsg, a.notify, a.notify_groups notifyGroups,
             (SELECT COALESCE(SUM(unread),0) FROM threads t WHERE t.account_id = a.id AND t.muted = 0) unread
      FROM zalo_accounts a WHERE a.user_id = ? ORDER BY a.created_at`
   ).all(user.id);
@@ -361,19 +386,32 @@ export function listThreads(user, accountId, q = "") {
 export function listMessages(user, accountId, type, threadId, before) {
   const row = ownAccount(user, accountId);
   const rows = db.prepare(
-    `SELECT id, msg_id msgId, from_uid fromUid, from_name fromName, ts, is_self isSelf, kind, text, url, thumb, title, media
+    `SELECT id, msg_id msgId, from_uid fromUid, from_name fromName, ts, is_self isSelf, kind, text, url, thumb, title, media, quote, recalled
      FROM messages WHERE account_id = ? AND type = ? AND thread_id = ? AND ts < ?
      ORDER BY ts DESC LIMIT 60`
   ).all(row.id, Number(type), String(threadId), Number(before) || 9e15);
+  const wasUnread = db.prepare("SELECT unread FROM threads WHERE account_id = ? AND type = ? AND thread_id = ?").get(row.id, Number(type), String(threadId))?.unread;
   db.prepare("UPDATE threads SET unread = 0 WHERE account_id = ? AND type = ? AND thread_id = ?").run(row.id, Number(type), String(threadId));
+  const react = db.prepare("SELECT uid, icon, name FROM reactions WHERE account_id = ? AND msg_id = ?");
+  for (const m of rows) {
+    m.quote = m.quote ? JSON.parse(m.quote) : null;
+    m.reactions = react.all(row.id, m.msgId);
+    if (m.recalled) Object.assign(m, { kind: "recalled", text: null, url: null, thumb: null, media: null });
+  }
+  if (wasUnread && !before) sendSeen(row.id, Number(type), String(threadId));
   return rows.reverse();
 }
 
-export async function sendText(user, accountId, type, threadId, text) {
+export async function sendText(user, accountId, type, threadId, text, quoteMsgId) {
   if (typeof text !== "string" || !text.trim()) throw httpError(400, "Tin nhắn trống");
   if (text.length > 5000) throw httpError(400, "Tin nhắn quá dài");
   const api = liveApi(user, accountId);
-  return api.sendMessage({ msg: text }, String(threadId), Number(type) === 1 ? ThreadType.Group : ThreadType.User);
+  let quote;
+  if (quoteMsgId) {
+    const r = rawMsg(Number(accountId), quoteMsgId);
+    quote = { content: r.content, msgType: r.msgType, propertyExt: r.propertyExt, uidFrom: r.uidFrom, msgId: r.msgId, cliMsgId: r.cliMsgId, ts: r.ts, ttl: r.ttl };
+  }
+  return api.sendMessage({ msg: text, quote }, String(threadId), tType(type));
 }
 
 export async function sendImage(user, accountId, type, threadId, { data, filename, width, height, caption }) {
@@ -460,4 +498,174 @@ export function mediaRow(user, messageId) {
     `SELECT m.media, m.title FROM messages m JOIN zalo_accounts a ON a.id = m.account_id
      WHERE m.id = ? AND a.user_id = ? AND m.media IS NOT NULL`
   ).get(Number(messageId), user.id);
+}
+
+// ---------- Tính năng chat giống Zalo ----------
+const tType = (t) => (Number(t) === 1 ? ThreadType.Group : ThreadType.User);
+function rawMsg(accountId, msgId) {
+  const row = db.prepare("SELECT raw, thread_id, type, is_self, recalled FROM messages WHERE account_id = ? AND msg_id = ?").get(accountId, String(msgId));
+  if (!row?.raw) throw httpError(404, "Không tìm thấy tin nhắn (tin cũ từ bản trước chưa hỗ trợ thao tác này)");
+  return { ...JSON.parse(row.raw), threadId: row.thread_id, type: row.type, isSelf: row.is_self, recalled: row.recalled };
+}
+
+function reactionsOf(accountId, msgId) {
+  return db.prepare("SELECT uid, icon, name FROM reactions WHERE account_id = ? AND msg_id = ?").all(accountId, msgId);
+}
+function handleReaction(acc, r, old = false) {
+  const c = r.data.content || {};
+  const uid = String(r.data.uidFrom);
+  for (const t of c.rMsg || []) {
+    const msgId = String(t.gMsgID);
+    const m = db.prepare("SELECT thread_id, type, is_self FROM messages WHERE account_id = ? AND msg_id = ?").get(acc.id, msgId);
+    if (!m) continue;
+    if (!c.rIcon) db.prepare("DELETE FROM reactions WHERE account_id = ? AND msg_id = ? AND uid = ?").run(acc.id, msgId, uid);
+    else db.prepare(
+      `INSERT INTO reactions (account_id, msg_id, uid, icon, name, ts) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(account_id, msg_id, uid) DO UPDATE SET icon = excluded.icon, name = COALESCE(excluded.name, name), ts = excluded.ts`
+    ).run(acc.id, msgId, uid, c.rIcon, r.data.dName || null, Number(r.data.ts) || now());
+    emit(acc.userId, "reaction", { accountId: acc.id, threadId: m.thread_id, type: m.type, msgId, reactions: reactionsOf(acc.id, msgId) });
+    // Báo khi có người thả cảm xúc vào tin của mình
+    if (!old && c.rIcon && m.is_self && !r.isSelf) {
+      const a = db.prepare("SELECT name, notify FROM zalo_accounts WHERE id = ?").get(acc.id);
+      const th = db.prepare("SELECT name, muted FROM threads WHERE account_id = ? AND thread_id = ? AND type = ?").get(acc.id, m.thread_id, m.type);
+      if (a?.notify && !th?.muted && userPrefs(acc.userId).push_preview) pushToUser(acc.userId, {
+        title: `${th?.name || "Zalo"} · ${a.name}`, body: `${r.data.dName || "Ai đó"} đã bày tỏ cảm xúc ${emoticons(c.rIcon)} với tin nhắn của bạn`,
+        tag: `${acc.id}-${m.type}-${m.thread_id}`, url: `#/a/${acc.id}/${m.type}/${m.thread_id}`,
+      });
+    }
+  }
+}
+
+function handleUndo(acc, u) {
+  const msgId = String(u.data.content?.globalMsgId || "");
+  const m = db.prepare("SELECT id, thread_id, type FROM messages WHERE account_id = ? AND msg_id = ?").get(acc.id, msgId);
+  if (!m) return;
+  db.prepare("UPDATE messages SET recalled = 1 WHERE id = ?").run(m.id);
+  const last = db.prepare("SELECT msg_id FROM messages WHERE account_id = ? AND thread_id = ? AND type = ? ORDER BY ts DESC LIMIT 1").get(acc.id, m.thread_id, m.type);
+  if (last?.msg_id === msgId) db.prepare("UPDATE threads SET last_text = ? WHERE account_id = ? AND thread_id = ? AND type = ?").run("Tin nhắn đã được thu hồi", acc.id, m.thread_id, m.type);
+  emit(acc.userId, "recall", { accountId: acc.id, threadId: m.thread_id, type: m.type, msgId });
+}
+
+export async function react(user, accountId, msgId, icon) {
+  const api = liveApi(user, accountId);
+  const r = rawMsg(Number(accountId), msgId);
+  if (icon && !Object.values(Reactions).includes(icon)) throw httpError(400, "Biểu tượng không hợp lệ");
+  await api.addReaction(icon || Reactions.NONE, { data: { msgId: r.msgId, cliMsgId: r.cliMsgId }, threadId: r.threadId, type: tType(r.type) });
+  // cập nhật ngay, không chờ Zalo gửi lại
+  const acc = live.get(Number(accountId));
+  const me = String(acc.api.getOwnId());
+  if (icon) db.prepare(`INSERT INTO reactions (account_id, msg_id, uid, icon, ts) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(account_id, msg_id, uid) DO UPDATE SET icon = excluded.icon, ts = excluded.ts`).run(Number(accountId), r.msgId, me, icon, now());
+  else db.prepare("DELETE FROM reactions WHERE account_id = ? AND msg_id = ? AND uid = ?").run(Number(accountId), r.msgId, me);
+  const reactions = reactionsOf(Number(accountId), r.msgId);
+  emit(user.id, "reaction", { accountId: Number(accountId), threadId: r.threadId, type: r.type, msgId: r.msgId, reactions });
+  return { reactions };
+}
+
+export async function recall(user, accountId, msgId) {
+  const api = liveApi(user, accountId);
+  const r = rawMsg(Number(accountId), msgId);
+  if (!r.isSelf) throw httpError(403, "Chỉ thu hồi được tin của mình");
+  await api.undo({ msgId: r.msgId, cliMsgId: r.cliMsgId }, r.threadId, tType(r.type));
+  db.prepare("UPDATE messages SET recalled = 1 WHERE account_id = ? AND msg_id = ?").run(Number(accountId), r.msgId);
+  emit(user.id, "recall", { accountId: Number(accountId), threadId: r.threadId, type: r.type, msgId: r.msgId });
+  return { ok: true };
+}
+
+export async function deleteForMe(user, accountId, msgId) {
+  const row = ownAccount(user, accountId);
+  const r = rawMsg(row.id, msgId);
+  const acc = live.get(row.id);
+  if (acc) {
+    try { await acc.api.deleteMessage({ data: { cliMsgId: r.cliMsgId, msgId: r.msgId, uidFrom: r.uidFrom }, threadId: r.threadId, type: tType(r.type) }, true); }
+    catch (e) { console.error("xoá tin trên Zalo lỗi", e?.message); }
+  }
+  db.prepare("DELETE FROM messages WHERE account_id = ? AND msg_id = ?").run(row.id, r.msgId);
+  return { ok: true };
+}
+
+function sendSeen(accountId, type, threadId) {
+  const acc = live.get(accountId);
+  if (!acc) return;
+  const rows = db.prepare(
+    "SELECT raw FROM messages WHERE account_id = ? AND type = ? AND thread_id = ? AND is_self = 0 AND raw IS NOT NULL ORDER BY ts DESC LIMIT 5"
+  ).all(accountId, type, threadId);
+  if (!rows.length) return;
+  const msgs = rows.map((r) => {
+    const d = JSON.parse(r.raw);
+    return { msgId: d.msgId, cliMsgId: d.cliMsgId, uidFrom: d.uidFrom, idTo: d.idTo, msgType: d.msgType, st: d.st ?? 3, at: d.at ?? 0, cmd: d.cmd ?? 501, ts: d.ts };
+  });
+  acc.api.sendSeenEvent(msgs, tType(type)).catch((e) => console.error("báo đã xem lỗi", e?.message || e));
+}
+
+export async function sendTyping(user, accountId, type, threadId) {
+  const api = liveApi(user, accountId);
+  await api.sendTypingEvent(String(threadId), tType(type)).catch(() => {});
+  return { ok: true };
+}
+
+// Sticker: id ảnh dùng chung đường dẫn công khai của Zalo
+const stickerImg = (id) => `https://zalo-api.zadn.vn/api/emoticon/sticker/webpc?eid=${id}&size=130`;
+export function recentStickers(user, accountId) {
+  const row = ownAccount(user, accountId);
+  return db.prepare(
+    `SELECT title FROM messages WHERE account_id = ? AND kind = 'sticker' AND title IS NOT NULL
+     GROUP BY title ORDER BY MAX(ts) DESC LIMIT 40`
+  ).all(row.id).map((r) => { const s = JSON.parse(r.title); return { ...s, url: stickerImg(s.id) }; }).filter((s) => s.id);
+}
+export async function searchStickers(user, accountId, q) {
+  const api = liveApi(user, accountId);
+  const list = await api.searchSticker(String(q).slice(0, 50), 40);
+  return list.map((s) => ({ id: s.sticker_id, cateId: s.cate_id, type: s.type, url: stickerImg(s.sticker_id) }));
+}
+export async function sendSticker(user, accountId, type, threadId, { id, cateId, type: stype }) {
+  const api = liveApi(user, accountId);
+  if (!Number(id)) throw httpError(400, "Sticker không hợp lệ");
+  return api.sendSticker({ id: Number(id), cateId: Number(cateId), type: Number(stype) }, String(threadId), tType(type));
+}
+
+export async function sendFile(user, accountId, type, threadId, { data, filename }) {
+  const buf = Buffer.from(String(data || ""), "base64");
+  if (!buf.length) throw httpError(400, "File trống");
+  if (buf.length > 20 * 1048576) throw httpError(413, "File quá lớn (tối đa 20MB)");
+  const name = String(filename || "tep").replace(/[\\/\0]/g, "_").slice(0, 120) || "tep";
+  if (!/\.[a-z0-9]{1,8}$/i.test(name)) throw httpError(400, "Tên file cần có đuôi (ví dụ .pdf)");
+  const api = liveApi(user, accountId);
+  return api.sendMessage({ msg: "", attachments: [{ data: buf, filename: name, metadata: { totalSize: buf.length } }] }, String(threadId), tType(type));
+}
+
+// ---------- Trang cá nhân / thông tin nhóm ----------
+const pick = (p) => p && ({
+  uid: String(p.userId || p.id || ""), name: p.displayName || p.zaloName, zaloName: p.zaloName, avatar: p.avatar, cover: p.cover || null,
+  status: p.status || "", gender: p.gender, dob: p.sdob || (p.dob ? new Date(p.dob * 1000).toLocaleDateString("vi-VN") : ""),
+  phone: p.phoneNumber || "", isFriend: !!p.isFr, lastActive: p.lastActionTime || null,
+});
+export async function userProfile(user, accountId, uid) {
+  const api = liveApi(user, accountId);
+  const r = await api.getUserInfo(String(uid));
+  const p = r.changed_profiles?.[uid] || r.changed_profiles?.[`${uid}_0`] || Object.values(r.changed_profiles || {})[0];
+  if (!p) throw httpError(404, "Không lấy được thông tin");
+  return pick(p);
+}
+export async function ownProfile(user, accountId) {
+  const api = liveApi(user, accountId);
+  const info = await api.fetchAccountInfo();
+  return pick(info?.profile || info);
+}
+export async function groupProfile(user, accountId, gid) {
+  const api = liveApi(user, accountId);
+  const g = (await api.getGroupInfo(String(gid))).gridInfoMap?.[gid];
+  if (!g) throw httpError(404, "Không lấy được thông tin nhóm");
+  let members = (g.currentMems || []).map((m) => ({ uid: String(m.id), name: m.dName || m.zaloName, avatar: m.avatar }));
+  if (!members.length && g.memVerList?.length) {
+    const ids = g.memVerList.slice(0, 100).map((x) => String(x).split("_")[0]);
+    try {
+      const r = await api.getGroupMembersInfo(ids);
+      members = Object.values(r.profiles || {}).map((m) => ({ uid: String(m.id), name: m.displayName || m.zaloName, avatar: m.avatar }));
+    } catch {}
+  }
+  const admins = new Set([String(g.creatorId), ...(g.adminIds || []).map(String)]);
+  for (const m of members) m.role = m.uid === String(g.creatorId) ? "Trưởng nhóm" : admins.has(m.uid) ? "Phó nhóm" : "";
+  members.sort((a, b) => (b.role ? 1 : 0) - (a.role ? 1 : 0));
+  return { name: g.name, avatar: g.fullAvt || g.avt, desc: g.desc || "", total: g.totalMember, created: g.createdTime || null, members };
 }

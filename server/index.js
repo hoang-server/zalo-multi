@@ -117,8 +117,27 @@ route("GET", "/api/accounts/:id/threads/:type/:tid/messages", (req, res, { user,
   send(res, 200, { messages: zalo.listMessages(user, p.id, p.type, p.tid, url.searchParams.get("before")) }));
 route("POST", "/api/accounts/:id/threads/:type/:tid/history", async (req, res, { user, p }) =>
   send(res, 200, await zalo.fetchHistory(user, p.id, p.type, p.tid)));
-route("POST", "/api/accounts/:id/threads/:type/:tid/text", async (req, res, { user, p }) =>
-  send(res, 200, await zalo.sendText(user, p.id, p.type, p.tid, (await readJson(req)).text)));
+route("POST", "/api/accounts/:id/threads/:type/:tid/text", async (req, res, { user, p }) => {
+  const b = await readJson(req);
+  send(res, 200, await zalo.sendText(user, p.id, p.type, p.tid, b.text, b.quote));
+});
+route("POST", "/api/accounts/:id/threads/:type/:tid/sticker", async (req, res, { user, p }) =>
+  send(res, 200, await zalo.sendSticker(user, p.id, p.type, p.tid, await readJson(req))));
+route("POST", "/api/accounts/:id/threads/:type/:tid/file", async (req, res, { user, p }) =>
+  send(res, 200, await zalo.sendFile(user, p.id, p.type, p.tid, await readJson(req))));
+route("POST", "/api/accounts/:id/threads/:type/:tid/typing", async (req, res, { user, p }) =>
+  send(res, 200, await zalo.sendTyping(user, p.id, p.type, p.tid)));
+route("POST", "/api/accounts/:id/messages/:mid/react", async (req, res, { user, p }) =>
+  send(res, 200, await zalo.react(user, p.id, p.mid, (await readJson(req)).icon)));
+route("POST", "/api/accounts/:id/messages/:mid/recall", async (req, res, { user, p }) => send(res, 200, await zalo.recall(user, p.id, p.mid)));
+route("DELETE", "/api/accounts/:id/messages/:mid", async (req, res, { user, p }) => send(res, 200, await zalo.deleteForMe(user, p.id, p.mid)));
+route("GET", "/api/accounts/:id/stickers", async (req, res, { user, p, url }) => {
+  const q = (url.searchParams.get("q") || "").trim();
+  send(res, 200, { stickers: q ? await zalo.searchStickers(user, p.id, q) : zalo.recentStickers(user, p.id) });
+});
+route("GET", "/api/accounts/:id/profile", async (req, res, { user, p }) => send(res, 200, await zalo.ownProfile(user, p.id)));
+route("GET", "/api/accounts/:id/users/:uid", async (req, res, { user, p }) => send(res, 200, await zalo.userProfile(user, p.id, p.uid)));
+route("GET", "/api/accounts/:id/groups/:gid", async (req, res, { user, p }) => send(res, 200, await zalo.groupProfile(user, p.id, p.gid)));
 route("POST", "/api/accounts/:id/threads/:type/:tid/image", async (req, res, { user, p }) =>
   send(res, 200, await zalo.sendImage(user, p.id, p.type, p.tid, await readJson(req))));
 

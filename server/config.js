@@ -9,6 +9,8 @@ export const HOST = env.HOST || "127.0.0.1";
 // Đường dẫn gốc của app trên website, ví dụ "/app" (không có dấu / ở cuối)
 export const BASE_PATH = (env.BASE_PATH || "/app").replace(/\/+$/, "");
 export const DATA_DIR = env.DATA_DIR || path.resolve("data");
+// Nơi lưu ảnh/file. Có thể là thư mục Google Drive gắn bằng rclone mount (xem deploy/zalo-media.service)
+export const MEDIA_DIR = env.MEDIA_DIR || path.join(DATA_DIR, "media");
 export const VAPID_SUBJECT = env.VAPID_SUBJECT || "mailto:admin@example.com";
 // Cho phép đăng ký tự do (không cần mã mời). Mặc định: chỉ người đầu tiên, sau đó cần mã mời.
 export const OPEN_SIGNUP = env.OPEN_SIGNUP === "1";

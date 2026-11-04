@@ -12,8 +12,11 @@ Bản chạy thử: <https://nguyenhuyhoang.website/app/>
 - Thêm tài khoản Zalo bằng cách quét mã QR
 - Danh sách hội thoại cá nhân và nhóm, tìm kiếm, tải danh bạ & nhóm
 - Đọc / trả lời tin nhắn chữ, xem ảnh, sticker, icon cảm xúc Zalo, file, video, tin thoại, liên kết
-- Gửi ảnh từ điện thoại (tự thu nhỏ trước khi gửi)
-- Lưu ảnh, file, video, tin thoại về server (xem lại được khi link Zalo hết hạn)
+- Gửi ảnh, file (≤ 20MB), sticker (tìm theo từ khoá, sticker dùng gần đây), emoji
+- Thả cảm xúc (giữ lâu vào tin hoặc bấm ⋯), trả lời trích dẫn, thu hồi, xoá phía mình, sao chép
+- Hiện "đang soạn tin…", báo đã xem cho người gửi
+- Xem trang cá nhân (ảnh bìa, giới thiệu, ngày sinh…), thông tin nhóm & danh sách thành viên, thông tin tài khoản của mình
+- Lưu ảnh, file, video, tin thoại về server hoặc thẳng lên **Google Drive** (xem lại được khi link Zalo hết hạn)
 - Số tin chưa đọc trên avatar và trên icon app (iOS 16.4+/Android/máy tính)
 - Cài đặt thông báo: theo tài khoản Zalo, tin nhóm, từng hội thoại; ẩn nội dung tin trong thông báo
 - Trang quản trị (`#/admin`): người dùng (khoá, cấp quyền, đặt lại mật khẩu, xoá), mã mời, bật/tắt tính năng, thống kê
@@ -30,7 +33,7 @@ Bản chạy thử: <https://nguyenhuyhoang.website/app/>
 
 Server giữ phiên đăng nhập Zalo Web của từng tài khoản (mã hoá AES-256-GCM trong SQLite), lắng nghe tin nhắn, lưu lại và đẩy thông báo tới thiết bị của chủ tài khoản. Tin cũ: mỗi lần kết nối, app lấy hết phần tin gần đây mà Zalo còn giữ cho phiên web. Khi mở một **nhóm**, app tải thêm tối đa 100 tin gần nhất từ lịch sử nhóm. Với chat **cá nhân**, Zalo không có API lịch sử cho phiên web (Zalo Web phải đồng bộ từ điện thoại), nên tin cũ hơn lúc thêm tài khoản sẽ không có.
 
-**Giới hạn:** Zalo chỉ cho **một phiên Zalo Web** mỗi tài khoản. Mở chat.zalo.me ở nơi khác sẽ đá phiên trong app ra (app sẽ báo và có nút *Kết nối lại*). Zalo PC và app điện thoại không bị ảnh hưởng.
+**Giới hạn:** Nhật ký (tường) không xem được vì Zalo không mở chức năng này cho Zalo Web. Zalo chỉ cho **một phiên Zalo Web** mỗi tài khoản. Mở chat.zalo.me ở nơi khác sẽ đá phiên trong app ra (app sẽ báo và có nút *Kết nối lại*). Zalo PC và app điện thoại không bị ảnh hưởng.
 
 ## Cài đặt
 
@@ -51,6 +54,7 @@ SETUP_CODE=ma-bi-mat DATA_DIR=./data node server/index.js
 Chạy thật với systemd + nginx:
 
 ```bash
+useradd --system --no-create-home --shell /usr/sbin/nologin zalo-multi
 cp deploy/zalo-multi.service /etc/systemd/system/
 printf 'VAPID_SUBJECT=mailto:ban@example.com\nSETUP_CODE=%s\n' "$(openssl rand -hex 4)" > /etc/zalo-multi.env
 chmod 600 /etc/zalo-multi.env
@@ -62,6 +66,21 @@ Mở `https://<domain>/app/`, tạo tài khoản đầu tiên bằng `SETUP_CODE
 
 Thêm tính năng có thể bật/tắt: thêm khoá vào `SETTING_DEFAULTS` trong `server/db.js` (và mô tả trong `SETTING_INFO` ở `public/app.js`), trang quản trị sẽ tự hiện.
 
+### Lưu ảnh/file trên Google Drive
+
+DB (tin nhắn chữ, vài MB) nằm trên server; ảnh/file có thể để thẳng trên Google Drive bằng `rclone mount`:
+
+```bash
+rclone config                      # tạo remote tên "gdrive" (Google Drive)
+rclone mkdir gdrive:zalo-multi-media
+useradd --system --no-create-home --shell /usr/sbin/nologin zalo-multi
+sed "s/ZALO_UID/$(id -u zalo-multi)/;s/ZALO_GID/$(id -g zalo-multi)/" deploy/zalo-media.service > /etc/systemd/system/zalo-media.service
+mkdir -p /mnt/zalo-media && systemctl daemon-reload && systemctl enable --now zalo-media
+echo ok | sudo -u zalo-multi tee /mnt/zalo-media/.drive   # file đánh dấu: app chỉ lưu khi Drive đang gắn
+```
+
+Service mẫu đã đặt `MEDIA_DIR=/mnt/zalo-media`. rclone giữ bộ đệm tối đa 2GB cho file hay xem, còn lại chỉ nằm trên Drive.
+
 ### Biến môi trường
 
 | Biến | Mặc định | Ý nghĩa |
@@ -69,11 +88,12 @@ Thêm tính năng có thể bật/tắt: thêm khoá vào `SETTING_DEFAULTS` tro
 | `PORT` / `HOST` | `8788` / `127.0.0.1` | Địa chỉ server lắng nghe |
 | `BASE_PATH` | `/app` | Đường dẫn của app trên website |
 | `DATA_DIR` | `./data` | DB SQLite, khoá mã hoá, khoá VAPID (tự sinh lần đầu) |
+| `MEDIA_DIR` | `DATA_DIR/media` | Nơi lưu ảnh/file (vd. thư mục Google Drive gắn bằng rclone) |
 | `SETUP_CODE` | – | Mã bắt buộc để tạo tài khoản quản trị đầu tiên |
 | `OPEN_SIGNUP` | `0` | Giá trị ban đầu của *Cho đăng ký tự do* (đổi được trong trang quản trị) |
 | `VAPID_SUBJECT` | `mailto:admin@example.com` | Email liên hệ gửi kèm push |
 
-Sao lưu: chỉ cần thư mục `DATA_DIR` (với systemd: `/var/lib/private/zalo-multi`). Mất `secrets.json` thì các phiên Zalo không giải mã được nữa (phải quét QR lại) và các máy phải bật lại thông báo.
+Sao lưu: thư mục `DATA_DIR` (với systemd: `/var/lib/zalo-multi`) và `MEDIA_DIR` nếu lưu trên ổ server. Mất `secrets.json` thì các phiên Zalo không giải mã được nữa (phải quét QR lại) và các máy phải bật lại thông báo.
 
 ## Dùng trên điện thoại
 
