@@ -58,6 +58,9 @@ function parseRoute() {
   if (h[0] === "settings") return { name: "settings" };
   if (h[0] === "admin") return { name: "admin" };
   if (h[0] === "inbox") return { name: "inbox" };
+  if (h[0] === "schedule") return { name: "schedule" };
+  if (h[0] === "a" && h[1] && (h[2] === "share" || h[2] === "stats")) return { name: h[2], acc: Number(h[1]) };
+  if (h[0] === "a" && h[1] && h[3] && h[4] === "crm") return { name: "customer", acc: Number(h[1]), type: Number(h[2]), tid: decodeURIComponent(h[3]) };
   if (h[0] === "a" && h[1] && h[3] && h[4] === "media") return { name: "gallery", acc: Number(h[1]), type: Number(h[2]), tid: decodeURIComponent(h[3]) };
   if (h[0] === "a" && h[1] && h[3] && h[4] === "m" && h[5]) return { name: "chat", acc: Number(h[1]), type: Number(h[2]), tid: decodeURIComponent(h[3]), around: decodeURIComponent(h[5]) };
   if (h[0] === "a" && h[2] === "me") return { name: "profile", acc: Number(h[1]), own: true };
@@ -82,7 +85,7 @@ async function render() {
     if (r.name === "login") return renderLogin();
     if (r.name === "settings") return renderSettings();
     if (r.name === "admin") return renderAdmin();
-    await loadAccounts();
+    await Promise.all([loadAccounts(), loadLabels()]);
     if (r.name === "home") {
       // Chỉ tự mở thẳng tài khoản duy nhất khi vừa mở app; bấm ‹ quay lại thì ở lại màn hình chính
       const auto = !state.opened && state.accounts.length === 1;
@@ -93,6 +96,10 @@ async function render() {
     state.opened = true;
     if (r.name === "threads") return renderThreads(r.acc);
     if (r.name === "inbox") return renderInbox();
+    if (r.name === "schedule") return renderSchedule();
+    if (r.name === "share") return renderShare(r);
+    if (r.name === "stats") return renderStats(r);
+    if (r.name === "customer") return renderCustomer(r);
     if (r.name === "gallery") return renderGallery(r);
     if (r.name === "chat") return renderChat(r);
     if (r.name === "profile") return renderProfile(r);
@@ -161,9 +168,12 @@ function renderHome() {
         <li><a class="row" href="#/a/${a.id}">
           ${avBadge(a.avatar, a.name, a.unread, "", !a.notify)}
           <div class="grow"><div class="name">${esc(a.name)}${a.notify ? "" : " 🔕"}</div>
-            <div class="sub st-${a.status}">${esc(statusText[a.status] || a.status)}</div></div>
+            <div class="sub st-${a.status}">${esc(statusText[a.status] || a.status)}</div>
+            ${a.owner ? `<div class="sub small">👥 Được giao bởi ${esc(a.owner)} · ${a.access === "reply" ? "được trả lời" : "chỉ xem"}</div>` : ""}</div>
         </a></li>`).join("")}
     </ul>
+    ${state.accounts.length ? `<a class="row" href="#/schedule"><span class="big-ico">⏰</span>
+      <div class="grow"><div class="name">Lịch hẹn & nhắc việc</div><div class="sub">Tin hẹn giờ gửi, việc cần nhắc</div></div></a>` : ""}
     ${state.accounts.length ? "" : `<p class="center muted">Chưa có tài khoản Zalo nào.<br>Bấm nút bên dưới và quét mã QR bằng app Zalo trên điện thoại khác hoặc máy này.</p>`}
     <div class="pad"><button class="btn primary block" id="add">＋ Thêm tài khoản Zalo</button></div>
     <div class="pad"><button class="btn block" id="logout">🚪 Đăng xuất khỏi app (${esc(state.user.username)})</button></div>
@@ -183,13 +193,27 @@ function accountSwitcher(activeId) {
 }
 
 // Bộ lọc hội thoại dùng chung cho danh sách của tài khoản và hộp thư chung
-const FILTERS = [["all", "Tất cả"], ["unread", "Chưa đọc"], ["user", "Cá nhân"], ["group", "Nhóm"]];
-const filterBar = (f) => `<div class="filters">${FILTERS.map(([k, t]) => `<button type="button" data-f="${k}" class="${f === k ? "on" : ""}">${t}</button>`).join("")}</div>`;
+const FILTERS = [["all", "Tất cả"], ["unread", "Chưa đọc"], ["unanswered", "Chưa trả lời"], ["user", "Cá nhân"], ["group", "Nhóm"]];
+// labels: nhãn hiện thêm vào dải lọc (của chủ tài khoản đang xem)
+const filterBar = (f, labels = []) => `<div class="filters">${FILTERS.map(([k, t]) => `<button type="button" data-f="${k}" class="${f === k ? "on" : ""}">${t}</button>`).join("")}${
+  labels.map((l) => `<button type="button" data-f="label:${l.id}" class="lbf ${labelClass(l)} ${f === "label:" + l.id ? "on" : ""}">${esc(l.name)}</button>`).join("")}</div>`;
+// Nhãn khách hàng: màu theo bảng cố định (CSP không cho style nội tuyến)
+const LABEL_COLORS = ["#e53935", "#fb8c00", "#fdd835", "#43a047", "#00897b", "#1e88e5", "#8e24aa", "#6d4c41", "#546e7a"];
+const labelClass = (l) => `lc${Math.max(0, LABEL_COLORS.indexOf(l.color))}`;
+async function loadLabels(force) {
+  if (state.labels && !force) return state.labels;
+  try { state.labels = (await api("GET", "labels")).labels; } catch { state.labels ||= []; }
+  return state.labels;
+}
+const labelById = (id) => (state.labels || []).find((l) => l.id === id);
+const labelChips = (ids = []) => ids.map(labelById).filter(Boolean).map((l) => `<span class="lb ${labelClass(l)}">${esc(l.name)}</span>`).join("");
+// nhãn của chủ tài khoản Zalo (nhân viên được giao dùng nhãn của chủ)
+const ownerLabels = (acc) => (state.labels || []).filter((l) => l.userId === (acc?.ownerId ?? state.user.id));
 const chatHash = (acc, type, tid, msgId) => `#/a/${acc}/${type}/${encodeURIComponent(tid)}${msgId ? `/m/${encodeURIComponent(msgId)}` : ""}`;
 function threadRow(t, acc, showAcc) {
   return `<li><a class="row" href="${chatHash(acc, t.type, t.threadId)}" data-acc="${acc}" data-type="${t.type}" data-tid="${esc(t.threadId)}">
     <span class="avw">${avBadge(t.avatar, t.name, t.unread, "", t.muted)}${showAcc ? `<span class="acc-mini">${avatar(t.accountAvatar, t.accountName, "xs")}</span>` : ""}</span>
-    <div class="grow"><div class="name">${t.type === 1 ? "👥 " : ""}${esc(t.name)}${t.muted ? " 🔕" : ""}</div>
+    <div class="grow"><div class="name">${t.type === 1 ? "👥 " : ""}${esc(t.name)}${t.muted ? " 🔕" : ""}${t.labels?.length ? `<span class="lbs">${labelChips(t.labels)}</span>` : ""}</div>
       <div class="sub ${t.unread ? "bold" : ""}">${showAcc ? `<span class="muted">${esc(t.accountName)}: </span>` : ""}${esc(emoticons(t.lastText || ""))}</div></div>
     <div class="meta"><div class="time">${t.lastTs ? timeLabel(t.lastTs) : ""}</div>${t.pinned ? `<div class="pin" title="Đã ghim">📌</div>` : ""}</div>
   </a></li>`;
@@ -242,7 +266,7 @@ async function renderThreads(accId, q = state.q || "") {
      ${["kicked", "offline", "reconnecting"].includes(acc.status) ? `<button class="btn sm" id="rc">Kết nối lại</button>` : ""}
      ${acc.status === "expired" ? `<button class="btn sm" id="reqr">Quét QR</button>` : ""}</div>` : ""}
   <div class="search"><input id="q" type="search" placeholder="Tìm hội thoại hoặc nội dung tin nhắn" value="${esc(q)}"></div>
-  ${q ? "" : filterBar(f)}
+  ${q ? "" : filterBar(f, ownerLabels(acc))}
   <main class="scroll">
     ${q && state.threads.length ? `<div class="sec">Hội thoại</div>` : ""}
     <ul class="list" id="tlist">${state.threads.map((t) => threadRow(t, accId)).join("")}</ul>
@@ -262,19 +286,25 @@ async function renderThreads(accId, q = state.q || "") {
   document.getElementById("rc")?.addEventListener("click", () => api("POST", `accounts/${accId}/reconnect`).then(() => toast("Đang kết nối lại…")));
   document.getElementById("reqr")?.addEventListener("click", startQr);
   const setNotify = (body, msg) => api("POST", `accounts/${accId}/notify`, body).then(() => { toast(msg); render(); });
+  const owner = acc.access === "owner", canReply = acc.access !== "view";
   document.getElementById("menu").onclick = () => sheet([
     ["👤 Thông tin tài khoản", () => go(`#/a/${accId}/me`)],
-    [acc.notify ? "🔕 Tắt thông báo tài khoản này" : "🔔 Bật thông báo tài khoản này",
+    ["📊 Thống kê", () => go(`#/a/${accId}/stats`)],
+    owner && ["👥 Giao cho nhân viên", () => go(`#/a/${accId}/share`)],
+    owner && [acc.notify ? "🔕 Tắt thông báo tài khoản này" : "🔔 Bật thông báo tài khoản này",
       () => setNotify({ notify: !acc.notify }, acc.notify ? "Đã tắt thông báo của tài khoản" : "Đã bật thông báo của tài khoản")],
-    [acc.notifyGroups ? "🔕 Tắt thông báo tin nhóm" : "🔔 Bật thông báo tin nhóm",
+    owner && [acc.notifyGroups ? "🔕 Tắt thông báo tin nhóm" : "🔔 Bật thông báo tin nhóm",
       () => setNotify({ notifyGroups: !acc.notifyGroups }, acc.notifyGroups ? "Đã tắt thông báo tin nhóm" : "Đã bật thông báo tin nhóm")],
     ["✓ Đánh dấu tất cả đã đọc", () => api("POST", `accounts/${accId}/read-all`).then(render)],
-    ["Tải danh bạ & nhóm", sync],
-    ["Kết nối lại", () => api("POST", `accounts/${accId}/reconnect`).then(() => toast("Đang kết nối lại…"))],
-    ["Quét lại mã QR", startQr],
-    ["Xoá tài khoản khỏi app", async () => {
+    canReply && ["Tải danh bạ & nhóm", sync],
+    canReply && ["Kết nối lại", () => api("POST", `accounts/${accId}/reconnect`).then(() => toast("Đang kết nối lại…"))],
+    owner && ["Quét lại mã QR", startQr],
+    owner ? ["Xoá tài khoản khỏi app", async () => {
       if (!confirm(`Xoá ${acc.name} khỏi app? Tin nhắn đã lưu trong app cũng bị xoá (không ảnh hưởng Zalo).`)) return;
       await api("DELETE", `accounts/${accId}`); go("#/");
+    }, "danger"] : ["Bỏ tài khoản được giao", async () => {
+      if (!confirm(`Bỏ ${acc.name} khỏi danh sách của bạn? Muốn dùng lại phải nhờ ${acc.owner} giao lại.`)) return;
+      await api("POST", `accounts/${accId}/leave`); go("#/");
     }, "danger"],
     ["🏠 Danh sách tài khoản Zalo", () => go("#/")],
     ["⚙︎ Cài đặt", () => go("#/settings")],
@@ -295,7 +325,7 @@ async function renderInbox(q = state.iq || "") {
   $app.innerHTML = `
   ${header("Hộp thư chung", { back: "#/", right: `<a class="icon-btn" href="#/settings" aria-label="Cài đặt">⚙︎</a>` })}
   <div class="search"><input id="iq" type="search" placeholder="Tìm trong mọi tài khoản" value="${esc(q)}"></div>
-  ${q ? "" : filterBar(f)}
+  ${q ? "" : filterBar(f, state.labels)}
   <main class="scroll">
     ${q && list.length ? `<div class="sec">Hội thoại</div>` : ""}
     <ul class="list" id="tlist">${list.map((t) => threadRow(t, t.accountId, true)).join("")}</ul>
@@ -311,6 +341,7 @@ async function renderInbox(q = state.iq || "") {
 const unaccentJs = (s) => String(s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D").toLowerCase();
 
 function sheet(items) {
+  items = items.filter(Boolean);
   const el = document.createElement("div");
   el.className = "sheet-bg";
   el.innerHTML = `<div class="sheet">${items.map(([t, , cls], i) => `<button class="sheet-item ${cls || ""}" data-i="${i}">${esc(t)}</button>`).join("")}
@@ -359,9 +390,10 @@ const reactEmoji = (code) => emoticons(code);
 async function renderChat(r) {
   const acc = state.accounts.find((a) => a.id === r.acc);
   if (!acc) return go("#/");
-  const [{ messages }, { threads }] = await Promise.all([
+  const [{ messages }, { threads }, cust] = await Promise.all([
     api("GET", `${tpath(r)}/messages${r.around ? `?around=${encodeURIComponent(r.around)}` : ""}`),
     state.threads.length && state.threadsAcc === r.acc ? { threads: state.threads } : api("GET", `accounts/${r.acc}/threads`),
+    api("GET", `${tpath(r)}/customer`).catch(() => null),
   ]);
   state.threads = threads; state.threadsAcc = r.acc;
   state.messages = messages;
@@ -371,10 +403,15 @@ async function renderChat(r) {
   const newer = target ? messages.filter((m) => m.ts > target.ts).length >= 30 : false;
   state.gap = newer;
   const t = threads.find((x) => x.threadId === r.tid && x.type === r.type) || { name: r.tid };
-  const online = acc.status === "online";
+  const viewOnly = acc.access === "view";
+  const online = acc.status === "online" && !viewOnly;
+  const crm = `#/a/${r.acc}/${r.type}/${encodeURIComponent(r.tid)}/crm`;
+  const pending = cust?.schedules?.filter((x) => x.status === "pending").length || 0;
   $app.innerHTML = `
   ${header(`<a class="chat-title" href="#/a/${r.acc}/${r.type}/${encodeURIComponent(r.tid)}/info">${avatar(t.avatar, t.name, "sm")}<div><div>${esc(t.name)}${t.muted ? " 🔕" : ""}</div><div class="sub small" id="csub">${esc(acc.name)}</div></div></a>`,
     { back: `#/a/${r.acc}`, right: `<button class="icon-btn" id="cmenu" aria-label="Tuỳ chọn">⋯</button>` })}
+  ${cust ? `<a class="crm-strip" href="${crm}">${cust.labels.length ? labelChips(cust.labels) : `<span class="muted">🏷 Gắn nhãn</span>`}
+    <span class="grow"></span>${cust.notes.length ? `<span>📝 ${cust.notes.length}</span>` : `<span class="muted">📝 Ghi chú</span>`}${pending ? `<span>⏰ ${pending}</span>` : ""}<span class="muted">›</span></a>` : ""}
   <main class="scroll chat" id="msgs">
     ${messages.length >= 60 ? `<div class="center"><button class="link" id="older">Xem tin cũ hơn</button></div>` : ""}
     <div id="mlist">${messages.map((m) => bubble(m, r.type)).join("")}</div>
@@ -388,7 +425,7 @@ async function renderChat(r) {
     <button type="button" class="icon-btn" id="emo" aria-label="Sticker và biểu tượng" ${online ? "" : "disabled"}>😊</button>
     <label class="icon-btn attach" aria-label="Gửi ảnh">🖼<input type="file" accept="image/*" id="pic" hidden multiple ${online ? "" : "disabled"}></label>
     <label class="icon-btn attach" aria-label="Gửi file">📎<input type="file" id="fil" hidden ${online ? "" : "disabled"}></label>
-    <textarea id="txt" rows="1" placeholder="Nhập tin nhắn" ${online ? "" : "disabled"}></textarea>
+    <textarea id="txt" rows="1" placeholder="${viewOnly ? "Bạn chỉ có quyền xem tài khoản này" : "Nhập tin nhắn"}" ${online ? "" : "disabled"}></textarea>
     <button class="icon-btn send" type="submit" aria-label="Gửi">➤</button>
   </form>`;
   if (target) {
@@ -405,13 +442,15 @@ async function renderChat(r) {
   const media = `#/a/${r.acc}/${r.type}/${encodeURIComponent(r.tid)}/media`;
   document.getElementById("cmenu").onclick = () => sheet([
     [r.type === 1 ? "👥 Thông tin nhóm" : "👤 Xem trang cá nhân", () => go(`#/a/${r.acc}/${r.type}/${encodeURIComponent(r.tid)}/info`)],
+    ["🗂 Hồ sơ khách: nhãn, ghi chú", () => go(crm)],
+    ["⏰ Hẹn giờ gửi tin / nhắc việc", () => { state.crmFocus = "schedule"; go(crm); }],
     ["🔍 Tìm tin nhắn", () => { state.galleryTab = "search"; go(media); }],
     ["🖼 Ảnh, file, link đã gửi", () => { state.galleryTab = "media"; go(media); }],
-    [t.pinned ? "📌 Bỏ ghim hội thoại" : "📌 Ghim hội thoại lên đầu", async () => {
+    !viewOnly && [t.pinned ? "📌 Bỏ ghim hội thoại" : "📌 Ghim hội thoại lên đầu", async () => {
       await api("POST", `${tpath(r)}/pin`, { pinned: !t.pinned }); t.pinned = t.pinned ? 0 : 1;
       toast(t.pinned ? "Đã ghim" : "Đã bỏ ghim");
     }],
-    [t.muted ? "🔔 Bật thông báo hội thoại này" : "🔕 Tắt thông báo hội thoại này", muteToggle],
+    !viewOnly && [t.muted ? "🔔 Bật thông báo hội thoại này" : "🔕 Tắt thông báo hội thoại này", muteToggle],
   ]);
 
   // soạn & gửi
@@ -588,7 +627,7 @@ function msgActions(r, mid) {
   const m = state.messages.find((x) => x.msgId === mid);
   if (!m || m.kind === "recalled") return;
   const acc = state.accounts.find((a) => a.id === r.acc);
-  const online = acc?.status === "online";
+  const online = acc?.status === "online" && acc.access !== "view";
   const mine = (m.reactions || []).find((x) => x.uid === acc?.zaloUid)?.icon;
   const el = document.createElement("div");
   el.className = "sheet-bg";
@@ -597,7 +636,7 @@ function msgActions(r, mid) {
     m.text && ["📋 Sao chép", () => navigator.clipboard.writeText(m.text).then(() => toast("Đã sao chép"))],
     (m.media || m.url) && m.kind !== "sticker" && ["⬇️ Mở / tải về", () => window.open(m.media ? `api/media/${m.id}` : m.url, "_blank", "noopener")],
     online && m.isSelf && ["↶ Thu hồi", async () => { if (confirm("Thu hồi tin nhắn này với mọi người?")) await api("POST", `accounts/${r.acc}/messages/${mid}/recall`).catch((e) => toast(e.message)); }],
-    ["🗑 Xoá ở phía tôi", async () => {
+    acc?.access !== "view" && ["🗑 Xoá ở phía tôi", async () => {
       if (!confirm("Xoá tin nhắn này ở phía bạn?")) return;
       await api("DELETE", `accounts/${r.acc}/messages/${mid}`).catch((e) => toast(e.message));
       state.messages = state.messages.filter((x) => x.msgId !== mid);
@@ -724,6 +763,202 @@ function bubble(m, type) {
 }
 const linkify = (s) => s.replace(/https?:\/\/[^\s<]+/g, (u) => `<a href="${u}" target="_blank" rel="noopener noreferrer">${u}</a>`).replace(/\n/g, "<br>");
 function scrollBottom() { const b = document.getElementById("msgs"); if (b) b.scrollTop = b.scrollHeight; }
+
+// ---------- hồ sơ khách: nhãn, ghi chú, hẹn giờ ----------
+const fmtWhen = (ts) => new Date(ts).toLocaleString("vi-VN", { weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+const SCHED_STATUS = { pending: "Đang chờ", sent: "Đã xong", failed: "Lỗi", cancelled: "Đã huỷ" };
+// giá trị cho <input type="datetime-local"> theo giờ máy
+const localInput = (ts) => { const d = new Date(ts); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
+function quickTimes() {
+  const n = new Date(), at = (d, h, m = 0) => { const x = new Date(d); x.setHours(h, m, 0, 0); return x.getTime(); };
+  const tomorrow = new Date(n); tomorrow.setDate(n.getDate() + 1);
+  return [
+    ["+30 phút", n.getTime() + 30 * 60e3], ["+1 giờ", n.getTime() + 3600e3], ["+3 giờ", n.getTime() + 3 * 3600e3],
+    n.getHours() < 19 && ["Tối nay 20:00", at(n, 20)], ["Sáng mai 8:00", at(tomorrow, 8)], ["Chiều mai 14:00", at(tomorrow, 14)],
+  ].filter(Boolean);
+}
+function scheduleRow(x, { showThread } = {}) {
+  const canCancel = x.status === "pending" && (x.userId === state.user.id || state.accounts.find((a) => a.id === x.accountId)?.access === "owner");
+  return `<li class="row sched ${x.status}">
+    <span class="big-ico">${x.kind === "send" ? "📤" : "⏰"}</span>
+    <div class="grow">
+      <div class="small"><b>${fmtWhen(x.at)}</b> · ${x.kind === "send" ? "Gửi tin" : "Nhắc việc"} · <span class="st">${SCHED_STATUS[x.status] || x.status}</span>${x.userId !== state.user.id ? ` · ${esc(x.username || "")}` : ""}</div>
+      ${showThread ? `<a class="small link0" href="${chatHash(x.accountId, x.type, x.threadId)}">${esc(x.threadName || x.threadId)} <span class="muted">· ${esc(x.accountName)}</span></a>` : ""}
+      <div class="pre">${esc(x.text)}</div>${x.error ? `<div class="small danger-t">${esc(x.error)}</div>` : ""}
+    </div>
+    ${canCancel ? `<button class="icon-btn" data-cancel="${x.id}" aria-label="Huỷ lịch">✕</button>` : ""}</li>`;
+}
+const bindCancel = (root, after) => root.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-cancel]"); if (!b) return;
+  if (!confirm("Huỷ lịch này?")) return;
+  try { await api("DELETE", `schedules/${b.dataset.cancel}`); toast("Đã huỷ"); after(); } catch (err) { toast(err.message); }
+});
+
+async function renderCustomer(r) {
+  const acc = state.accounts.find((a) => a.id === r.acc);
+  if (!acc) return go("#/");
+  const c = await api("GET", `${tpath(r)}/customer`);
+  const canEdit = c.access !== "view";
+  const back = chatHash(r.acc, r.type, r.tid);
+  const focus = state.crmFocus; state.crmFocus = null;
+  $app.innerHTML = `
+  ${header("Hồ sơ khách", { back })}
+  <main class="scroll pad crm">
+    <div class="crm-head">${avatar(c.thread.avatar, c.thread.name)}<div><div class="name">${esc(c.thread.name || r.tid)}</div><div class="sub small">${esc(acc.name)}${r.type === 1 ? " · nhóm" : ""}</div></div></div>
+
+    <section class="card"><h3>🏷 Nhãn</h3>
+      <div class="lb-pick">${c.ownerLabels.map((l) => `<button type="button" class="lb ${labelClass(l)} ${c.labels.includes(l.id) ? "on" : "off"}" data-l="${l.id}" ${canEdit ? "" : "disabled"}>${c.labels.includes(l.id) ? "✓ " : ""}${esc(l.name)}</button>`).join("")
+        || `<span class="muted small">Chưa có nhãn.</span>`}</div>
+      ${acc.access === "owner" ? `<p class="small muted"><a class="link" href="#/settings">Thêm / sửa nhãn</a></p>` : ""}
+    </section>
+
+    <section class="card"><h3>📝 Ghi chú nội bộ</h3>
+      <p class="small muted">Chỉ người dùng app thấy, khách không thấy.</p>
+      <form id="nf"><textarea name="text" rows="2" placeholder="Ví dụ: khách hỏi giá sỉ, hẹn gửi mẫu thứ 6" maxlength="5000" required></textarea><button class="btn primary sm">Lưu ghi chú</button></form>
+      <ul class="list notes">${c.notes.map((n) => `<li class="row"><div class="grow"><div class="small muted">${esc(n.username || "?")} · ${fmtWhen(n.ts)}</div><div class="pre">${esc(n.text)}</div></div>
+        ${n.userId === state.user.id || acc.access === "owner" ? `<button class="icon-btn" data-dn="${n.id}" aria-label="Xoá ghi chú">🗑</button>` : ""}</li>`).join("")}</ul>
+    </section>
+
+    <section class="card" id="sched"><h3>⏰ Hẹn giờ</h3>
+      <form id="sf">
+        <div class="seg">
+          <label><input type="radio" name="kind" value="send" ${canEdit ? "checked" : "disabled"}> 📤 Gửi tin cho khách</label>
+          <label><input type="radio" name="kind" value="remind" ${canEdit ? "" : "checked"}> ⏰ Nhắc tôi</label>
+        </div>
+        <input type="datetime-local" name="at" required value="${localInput(Date.now() + 3600e3)}">
+        <div class="chips">${quickTimes().map(([t, ts]) => `<button type="button" data-at="${ts}">${t}</button>`).join("")}</div>
+        <textarea name="text" rows="3" maxlength="5000" required placeholder="Nội dung tin sẽ gửi / việc cần nhắc"></textarea>
+        <button class="btn primary sm">Đặt lịch</button>
+        <p class="small muted">Tin hẹn giờ do server gửi, không cần mở app. Nếu lúc đó tài khoản Zalo mất kết nối, app thử lại trong 30 phút rồi báo lỗi.</p>
+      </form>
+      <ul class="list" id="slist">${c.schedules.map((x) => scheduleRow(x)).join("") || ""}</ul>
+    </section>
+  </main>`;
+  if (focus === "schedule") document.getElementById("sched").scrollIntoView();
+  const main = document.querySelector("main");
+  main.querySelector(".lb-pick").onclick = async (e) => {
+    const b = e.target.closest("[data-l]"); if (!b || !canEdit) return;
+    const id = Number(b.dataset.l);
+    const ids = c.labels.includes(id) ? c.labels.filter((x) => x !== id) : c.labels.concat(id);
+    try { await api("POST", `${tpath(r)}/labels`, { labels: ids }); state.threads = []; renderCustomer(r); } catch (err) { toast(err.message); }
+  };
+  document.getElementById("nf").onsubmit = async (e) => {
+    e.preventDefault();
+    try { await api("POST", `${tpath(r)}/notes`, { text: e.target.text.value }); toast("Đã lưu ghi chú"); renderCustomer(r); } catch (err) { toast(err.message); }
+  };
+  main.querySelector(".notes").onclick = async (e) => {
+    const b = e.target.closest("[data-dn]"); if (!b || !confirm("Xoá ghi chú này?")) return;
+    try { await api("DELETE", `notes/${b.dataset.dn}`); renderCustomer(r); } catch (err) { toast(err.message); }
+  };
+  const sf = document.getElementById("sf");
+  sf.querySelector(".chips").onclick = (e) => { const b = e.target.closest("[data-at]"); if (b) sf.at.value = localInput(Number(b.dataset.at)); };
+  sf.onsubmit = async (e) => {
+    e.preventDefault();
+    const at = new Date(sf.at.value).getTime();
+    const kind = sf.kind.value;
+    try {
+      await api("POST", `${tpath(r)}/schedules`, { kind, at, text: sf.text.value });
+      toast(kind === "send" ? `Sẽ gửi lúc ${fmtWhen(at)}` : `Sẽ nhắc lúc ${fmtWhen(at)}`);
+      state.crmFocus = "schedule"; renderCustomer(r);
+    } catch (err) { toast(err.message); }
+  };
+  bindCancel(document.getElementById("slist"), () => { state.crmFocus = "schedule"; renderCustomer(r); });
+}
+
+async function renderSchedule() {
+  const { schedules } = await api("GET", "schedules");
+  const pending = schedules.filter((x) => x.status === "pending"), done = schedules.filter((x) => x.status !== "pending");
+  $app.innerHTML = `
+  ${header("Lịch hẹn & nhắc việc", { back: "#/" })}
+  <main class="scroll">
+    <div class="sec">Sắp tới (${pending.length})</div>
+    <ul class="list" id="sl1">${pending.map((x) => scheduleRow(x, { showThread: true })).join("")}</ul>
+    ${pending.length ? "" : `<p class="center muted small pad">Chưa có lịch nào. Mở một hội thoại → ⋯ → <b>Hẹn giờ gửi tin / nhắc việc</b>.</p>`}
+    ${done.length ? `<div class="sec">3 ngày qua</div><ul class="list">${done.map((x) => scheduleRow(x, { showThread: true })).join("")}</ul>` : ""}
+  </main>`;
+  bindCancel(document.querySelector("main"), renderSchedule);
+}
+
+// ---------- giao tài khoản cho nhân viên ----------
+async function renderShare(r) {
+  const acc = state.accounts.find((a) => a.id === r.acc);
+  if (!acc || acc.access !== "owner") return go(`#/a/${r.acc}`);
+  const { shares } = await api("GET", `accounts/${r.acc}/shares`);
+  $app.innerHTML = `
+  ${header("Giao cho nhân viên", { back: `#/a/${r.acc}` })}
+  <main class="scroll pad">
+    <p class="small muted">Nhân viên đăng nhập app bằng tài khoản riêng của họ sẽ thấy và dùng được <b>${esc(acc.name)}</b>. Họ không xoá được tài khoản, không quét lại QR, không giao tiếp cho người khác.</p>
+    <section class="card"><h3>Đang được giao</h3>
+      <ul class="list" id="shl">${shares.map((x) => `<li class="row"><div class="grow"><b>${esc(x.username)}</b></div>
+        <select data-u="${x.userId}"><option value="0" ${x.canReply ? "" : "selected"}>Chỉ xem</option><option value="1" ${x.canReply ? "selected" : ""}>Được trả lời</option></select>
+        <button class="icon-btn" data-rm="${x.userId}" aria-label="Thu hồi">✕</button></li>`).join("") || `<li class="muted small">Chưa giao cho ai.</li>`}</ul>
+    </section>
+    <section class="card"><h3>Giao thêm</h3>
+      <form id="shf"><input name="username" placeholder="Tên đăng nhập app của nhân viên" autocomplete="off" required>
+        <select name="canReply"><option value="1">Được trả lời tin nhắn</option><option value="0">Chỉ xem</option></select>
+        <button class="btn primary">Giao tài khoản</button></form>
+      <p class="small muted">Nhân viên chưa có tài khoản app? ${state.user.is_admin ? `Tạo <a class="link" href="#/admin">mã mời</a> cho họ đăng ký trước.` : "Nhờ quản trị viên tạo mã mời để họ đăng ký trước."}</p>
+    </section>
+    <p class="small muted">• <b>Chỉ xem</b>: đọc tin, xem hồ sơ khách, ghi chú, đặt nhắc việc cho mình. • <b>Được trả lời</b>: thêm gửi tin, ảnh, file, thả cảm xúc, gắn nhãn, hẹn giờ gửi tin. Ai đọc tin thì hội thoại cũng hết “chưa đọc” với mọi người.</p>
+  </main>`;
+  const save = async (body) => { try { await api("POST", `accounts/${r.acc}/shares`, body); toast("Đã lưu"); renderShare(r); } catch (err) { toast(err.message); } };
+  document.getElementById("shf").onsubmit = (e) => { e.preventDefault(); save({ username: e.target.username.value.trim(), canReply: e.target.canReply.value === "1" }); };
+  const list = document.getElementById("shl");
+  list.onchange = (e) => { const sel = e.target.closest("[data-u]"); if (sel) save({ username: shares.find((x) => x.userId === Number(sel.dataset.u)).username, canReply: sel.value === "1" }); };
+  list.onclick = async (e) => {
+    const b = e.target.closest("[data-rm]"); if (!b) return;
+    const u = shares.find((x) => x.userId === Number(b.dataset.rm));
+    if (!confirm(`Thu hồi ${acc.name} khỏi ${u.username}?`)) return;
+    await api("DELETE", `accounts/${r.acc}/shares/${u.userId}`).catch((err) => toast(err.message)); renderShare(r);
+  };
+}
+
+// ---------- thống kê ----------
+const fmtDur = (ms) => (ms == null ? "–" : ms < 60e3 ? `${Math.round(ms / 1e3)} giây` : ms < 3600e3 ? `${Math.round(ms / 60e3)} phút` : `${(ms / 3600e3).toFixed(1)} giờ`);
+function barChart(series) {
+  const W = 640, H = 160, pad = 18, n = series.length, bw = (W - pad) / n;
+  const max = Math.max(1, ...series.map((d) => Math.max(d.incoming, d.outgoing)));
+  const y = (v) => H - pad - (v / max) * (H - pad * 2);
+  const bars = series.map((d, i) => {
+    const x = pad + i * bw, w = Math.max(2, bw / 2 - 2);
+    const lab = i % Math.ceil(n / 7) === 0 || i === n - 1 ? `<text x="${x + bw / 2}" y="${H - 3}" class="ax" text-anchor="middle">${d.day.slice(8)}/${d.day.slice(5, 7)}</text>` : "";
+    return `<rect class="bin" x="${x + 1}" y="${y(d.incoming)}" width="${w}" height="${H - pad - y(d.incoming)}"><title>${d.day}: ${d.incoming} tin đến</title></rect>
+      <rect class="bout" x="${x + 1 + w + 1}" y="${y(d.outgoing)}" width="${w}" height="${H - pad - y(d.outgoing)}"><title>${d.day}: ${d.outgoing} tin gửi</title></rect>${lab}`;
+  }).join("");
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Số tin mỗi ngày">
+    <line x1="${pad}" x2="${W}" y1="${H - pad}" y2="${H - pad}" class="axl"/>
+    <text x="2" y="${pad}" class="ax">${max}</text>${bars}</svg>
+    <div class="legend small"><span class="k bin"></span> Tin đến <span class="k bout"></span> Tin gửi đi</div>`;
+}
+async function renderStats(r, days = state.statDays || 14) {
+  const acc = state.accounts.find((a) => a.id === r.acc);
+  if (!acc) return go("#/");
+  const st = await api("GET", `accounts/${r.acc}/stats?days=${days}`);
+  const tile = (v, t) => `<div class="tile"><div class="v">${v}</div><div class="small muted">${t}</div></div>`;
+  const maxL = Math.max(1, ...st.labels.map((l) => l.n));
+  $app.innerHTML = `
+  ${header(`Thống kê · ${esc(acc.name)}`, { back: `#/a/${r.acc}` })}
+  <div class="filters">${[7, 14, 30, 90].map((d) => `<button type="button" data-d="${d}" class="${d === st.days ? "on" : ""}">${d} ngày</button>`).join("")}</div>
+  <main class="scroll pad">
+    <div class="tiles">
+      ${tile(st.totals.incoming, "tin đến")}${tile(st.totals.outgoing, "tin gửi đi")}
+      ${tile(st.active, "hội thoại có tin")}${tile(st.newThreads, "khách mới (chat cá nhân)")}
+      ${tile(fmtDur(st.response.avg), "trả lời trung bình")}${tile(fmtDur(st.response.median), "trả lời trung vị")}
+    </div>
+    <section class="card"><h3>Tin nhắn mỗi ngày</h3>${barChart(st.series)}</section>
+    <section class="card"><h3>Khách chưa được trả lời (${st.unanswered.length}${st.unanswered.length >= 50 ? "+" : ""})</h3>
+      <p class="small muted">Chat cá nhân mà tin cuối là của khách, chờ lâu nhất ở trên.</p>
+      <ul class="list">${st.unanswered.map((t) => `<li><a class="row" href="${chatHash(r.acc, t.type, t.threadId)}">${avatar(t.avatar, t.name, "sm")}
+        <div class="grow"><div class="name">${esc(t.name)}</div><div class="sub">${esc(emoticons(t.lastText || ""))}</div></div>
+        <div class="meta"><div class="time">chờ ${fmtDur(Date.now() - t.lastTs)}</div></div></a></li>`).join("") || `<li class="muted small">Đã trả lời hết 👍</li>`}</ul>
+    </section>
+    <section class="card"><h3>Theo nhãn</h3>
+      ${st.labels.map((l) => `<div class="lbar"><span class="lb ${labelClass(l)}">${esc(l.name)}</span><meter min="0" max="${maxL}" value="${l.n}"></meter><b>${l.n}</b></div>`).join("") || `<p class="muted small">Chưa có nhãn.</p>`}
+    </section>
+    <p class="small muted">Thời gian trả lời tính từ tin đầu tiên của khách tới tin trả lời kế tiếp (chỉ chat cá nhân, bỏ các lần chờ quá 24 giờ). Chỉ tính tin app đã lưu.</p>
+  </main>`;
+  document.querySelectorAll("[data-d]").forEach((b) => b.onclick = () => { state.statDays = Number(b.dataset.d); renderStats(r, state.statDays); });
+}
 
 // ---------- ảnh, file, link & tìm trong một hội thoại ----------
 const GTABS = [["media", "Ảnh/Video"], ["file", "File"], ["link", "Link"], ["search", "Tìm tin"]];
@@ -865,6 +1100,13 @@ async function renderSettings() {
       <label class="toggle"><input type="checkbox" data-pref="app_badge" ${pf.app_badge !== false ? "checked" : ""}> Hiện số tin chưa đọc trên icon app</label>
       <p class="muted small">Tắt thông báo riêng từng tài khoản Zalo hoặc từng hội thoại: bấm nút ⋯ ở góc trên của tài khoản / hội thoại đó.</p>
     </section>
+    <section class="card"><h3>🏷 Nhãn khách hàng</h3>
+      <p class="muted small">Gắn cho hội thoại ở <b>Hồ sơ khách</b> (dải nhãn dưới tên khách trong chat), rồi lọc danh sách theo nhãn. Nhân viên được giao tài khoản dùng chung bộ nhãn này.</p>
+      <ul class="list" id="lblist"></ul>
+      <form id="lbform"><input type="hidden" name="id"><input name="name" placeholder="Tên nhãn, vd: Khách sỉ" maxlength="30" required>
+        <div class="colors">${LABEL_COLORS.map((c, i) => `<label class="lc${i}"><input type="radio" name="color" value="${c}" ${i === 5 ? "checked" : ""}><span></span></label>`).join("")}</div>
+        <button class="btn primary" id="lbsave">Thêm nhãn</button> <button type="button" class="btn" id="lbnew" hidden>Huỷ sửa</button></form>
+    </section>
     <section class="card"><h3>Tin mẫu (trả lời nhanh)</h3>
       <p class="muted small">Câu hay gửi (báo giá, số tài khoản, địa chỉ…). Khi chat, gõ <b>/</b> + tên tắt hoặc bấm 😊 → <b>Tin mẫu</b>.</p>
       <ul class="list quick-admin" id="qlist"></ul>
@@ -899,6 +1141,32 @@ async function renderSettings() {
     try { await api("POST", "password", Object.fromEntries(new FormData(e.target))); toast("Đã đổi mật khẩu"); e.target.reset(); } catch (err) { toast(err.message); }
   };
   document.getElementById("logout").onclick = logout;
+  const lf = document.getElementById("lbform"), lid = lf.querySelector("[name=id]"), lname = lf.querySelector("[name=name]");
+  const resetL = () => { lf.reset(); lid.value = ""; document.getElementById("lbsave").textContent = "Thêm nhãn"; document.getElementById("lbnew").hidden = true; };
+  const drawL = (labels) => {
+    state.labels = labels;
+    const mine = labels.filter((l) => l.userId === state.user.id);
+    document.getElementById("lblist").innerHTML = mine.map((l) => `<li class="row"><span class="lb ${labelClass(l)}">${esc(l.name)}</span><span class="grow"></span>
+      <button class="icon-btn" data-le="${l.id}" aria-label="Sửa">✎</button><button class="icon-btn" data-ld="${l.id}" aria-label="Xoá">🗑</button></li>`).join("")
+      || `<li class="muted small">Chưa có nhãn nào.</li>`;
+  };
+  loadLabels(true).then(drawL);
+  document.getElementById("lblist").onclick = async (e) => {
+    const ed = e.target.closest("[data-le]"), del = e.target.closest("[data-ld]");
+    if (ed) {
+      const l = state.labels.find((x) => x.id === Number(ed.dataset.le));
+      lid.value = l.id; lname.value = l.name;
+      const radio = lf.querySelector(`[name=color][value="${l.color}"]`); if (radio) radio.checked = true;
+      document.getElementById("lbsave").textContent = "Lưu thay đổi"; document.getElementById("lbnew").hidden = false; lname.focus();
+    }
+    if (del && confirm("Xoá nhãn này? Các hội thoại đang gắn nhãn sẽ bị bỏ nhãn.")) drawL((await api("DELETE", `labels/${del.dataset.ld}`)).labels);
+  };
+  document.getElementById("lbnew").onclick = resetL;
+  lf.onsubmit = async (e) => {
+    e.preventDefault();
+    try { drawL((await api("POST", "labels", { id: lid.value || undefined, name: lname.value, color: lf.querySelector("[name=color]:checked")?.value })).labels); resetL(); toast("Đã lưu nhãn"); }
+    catch (err) { toast(err.message); }
+  };
   const qf = document.getElementById("qform"), qid = qf.querySelector("[name=id]");
   const resetQ = () => { qf.reset(); qid.value = ""; document.getElementById("qsave").textContent = "Thêm tin mẫu"; document.getElementById("qnew").hidden = true; };
   const drawQ = (items) => {
@@ -1085,6 +1353,8 @@ function startEvents() {
     }
     if (!m.isSelf && !(r?.name === "chat" && r.acc === m.accountId && r.tid === m.threadId)) setBadge((state.badge || 0) + 1);
   });
+  es.addEventListener("accounts", () => { if (state.route?.name !== "chat") render(); else loadAccounts().catch(() => {}); });
+  es.addEventListener("schedule", () => { if (["schedule", "customer"].includes(state.route?.name)) render(); });
   es.addEventListener("account", (e) => {
     const d = JSON.parse(e.data);
     const a = state.accounts.find((x) => x.id === d.id);

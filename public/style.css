@@ -202,3 +202,45 @@ button.from { background: none; border: 0; padding: 0; font: inherit; font-size:
 .gi img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .gi.vid span { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 28px; text-shadow: 0 1px 4px #000; }
 .viewer-go { position: absolute; bottom: calc(20px + var(--safe-b)); left: 50%; transform: translateX(-50%); }
+
+/* nhãn khách hàng */
+.lc0 { --c: #e53935; } .lc1 { --c: #fb8c00; } .lc2 { --c: #f9a825; } .lc3 { --c: #43a047; } .lc4 { --c: #00897b; }
+.lc5 { --c: #1e88e5; } .lc6 { --c: #8e24aa; } .lc7 { --c: #6d4c41; } .lc8 { --c: #546e7a; }
+.lb { display: inline-block; border-radius: 9px; padding: 1px 7px; font-size: 11px; font-weight: 600; line-height: 16px; color: #fff; background: var(--c); white-space: nowrap; }
+.lbs { display: inline-flex; gap: 4px; margin-left: 6px; vertical-align: 1px; flex-wrap: wrap; }
+.filters .lbf { border-color: var(--c); color: var(--c); }
+.filters .lbf.on { background: var(--c); color: #fff; border-color: var(--c); }
+.lb-pick { display: flex; flex-wrap: wrap; gap: 8px; }
+.lb-pick .lb { font-size: 14px; padding: 6px 12px; border-radius: 16px; border: 2px solid var(--c); cursor: pointer; }
+.lb-pick .lb.off { background: none; color: var(--c); }
+.colors { display: flex; gap: 8px; margin: 4px 0 10px; flex-wrap: wrap; }
+.colors label { cursor: pointer; } .colors input { position: absolute; opacity: 0; pointer-events: none; }
+.colors span { display: block; width: 28px; height: 28px; border-radius: 50%; background: var(--c); border: 3px solid transparent; }
+.colors input:checked + span { border-color: var(--fg); }
+.crm-strip { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--bg); color: var(--fg); font-size: 13px; overflow-x: auto; white-space: nowrap; }
+.crm-strip .grow { flex: 1; }
+
+/* hồ sơ khách & lịch hẹn */
+.crm-head { display: flex; align-items: center; gap: 12px; margin: 4px 0 8px; } .crm-head .name { font-weight: 600; font-size: 17px; }
+.crm textarea, .crm input[type=datetime-local], #shf select, #shf input { margin-bottom: 8px; }
+.seg { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.seg label { flex: 1; min-width: 140px; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: var(--bg2); font-size: 14px; }
+.notes .row, .sched, #shl .row { padding: 8px 0; align-items: flex-start; }
+.sched .big-ico { width: 32px; height: 32px; font-size: 20px; }
+.sched.sent, .sched.cancelled { opacity: .6; }
+.sched.failed .st, .danger-t { color: var(--danger); }
+.link0 { color: var(--brand); display: block; }
+select { font: inherit; color: var(--fg); background: var(--bg2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+#shf select { width: 100%; }
+
+/* thống kê */
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; margin: 4px 0 12px; }
+.tile { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+.tile .v { font-size: 22px; font-weight: 700; }
+.chart { width: 100%; height: auto; display: block; }
+.chart .bin, .legend .bin { fill: #90a4ae; background: #90a4ae; } .chart .bout, .legend .bout { fill: var(--brand); background: var(--brand); }
+.chart .ax { font-size: 10px; fill: var(--muted); } .chart .axl { stroke: var(--line); }
+.legend { display: flex; align-items: center; gap: 6px; margin-top: 6px; color: var(--muted); }
+.legend .k { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.lbar { display: grid; grid-template-columns: minmax(80px, max-content) 1fr 36px; gap: 8px; align-items: center; margin: 6px 0; }
+.lbar meter { width: 100%; height: 12px; } .lbar b { text-align: right; }

@@ -117,6 +117,55 @@ db.exec(`CREATE TABLE IF NOT EXISTS quick_replies (
   created_at INTEGER NOT NULL
 )`);
 
+// Giao tài khoản Zalo cho người dùng khác (nhân viên): can_reply = 0 chỉ xem, 1 được trả lời
+db.exec(`CREATE TABLE IF NOT EXISTS account_shares (
+  account_id INTEGER NOT NULL REFERENCES zalo_accounts(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  can_reply INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (account_id, user_id)
+)`);
+// Nhãn khách hàng: thuộc chủ tài khoản Zalo, nhân viên được giao dùng chung bộ nhãn của chủ
+db.exec(`CREATE TABLE IF NOT EXISTS labels (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  color TEXT NOT NULL,
+  pos INTEGER NOT NULL DEFAULT 0
+)`);
+db.exec(`CREATE TABLE IF NOT EXISTS thread_labels (
+  account_id INTEGER NOT NULL REFERENCES zalo_accounts(id) ON DELETE CASCADE,
+  thread_id TEXT NOT NULL,
+  type INTEGER NOT NULL,
+  label_id INTEGER NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+  PRIMARY KEY (account_id, thread_id, type, label_id)
+)`);
+db.exec(`CREATE TABLE IF NOT EXISTS thread_notes (
+  id INTEGER PRIMARY KEY,
+  account_id INTEGER NOT NULL REFERENCES zalo_accounts(id) ON DELETE CASCADE,
+  thread_id TEXT NOT NULL,
+  type INTEGER NOT NULL,
+  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  text TEXT NOT NULL,
+  ts INTEGER NOT NULL
+)`);
+db.exec("CREATE INDEX IF NOT EXISTS thread_notes_thread ON thread_notes(account_id, thread_id, type, ts)");
+// Hẹn giờ gửi tin (kind = send) và nhắc việc (kind = remind)
+db.exec(`CREATE TABLE IF NOT EXISTS schedules (
+  id INTEGER PRIMARY KEY,
+  kind TEXT NOT NULL,
+  account_id INTEGER NOT NULL REFERENCES zalo_accounts(id) ON DELETE CASCADE,
+  thread_id TEXT NOT NULL,
+  type INTEGER NOT NULL,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  text TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',   -- pending | sent | failed | cancelled
+  error TEXT,
+  created_at INTEGER NOT NULL
+)`);
+db.exec("CREATE INDEX IF NOT EXISTS schedules_due ON schedules(status, at)");
+
 // Tìm kiếm không dấu, không phân biệt hoa thường: unaccent('Xin Chào') = 'xin chao'
 export const unaccent = (s) => String(s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D").toLowerCase();
 db.function("unaccent", { deterministic: true }, (s) => (s == null ? null : unaccent(s)));

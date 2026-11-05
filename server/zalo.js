@@ -138,7 +138,7 @@ async function storeMessage(acc, msg, { notify }) {
     id: Number(ins.lastInsertRowid), accountId: acc.id, threadId, type, msgId: String(d.msgId), fromUid: d.uidFrom, fromName: d.dName,
     ts, isSelf: msg.isSelf, ...p, quote: quoteOf(d) ? JSON.parse(quoteOf(d)) : null, reactions: [],
   };
-  emit(acc.userId, "message", { ...out, threadName: info.name, threadAvatar: info.avatar });
+  emitAcc(acc.id, "message", { ...out, threadName: info.name, threadAvatar: info.avatar });
 
   // Lưu ảnh/file về server (chạy nền, không chặn tin nhắn)
   if (p.url && ["image", "file", "video", "voice"].includes(p.kind)) {
@@ -149,21 +149,35 @@ async function storeMessage(acc, msg, { notify }) {
   if (notify && !msg.isSelf) {
     const a = db.prepare("SELECT name, notify, notify_groups FROM zalo_accounts WHERE id = ?").get(acc.id);
     const muted = db.prepare("SELECT muted FROM threads WHERE account_id = ? AND thread_id = ? AND type = ?").get(acc.id, threadId, type)?.muted;
-    const prefs = userPrefs(acc.userId);
     if (a?.notify && !muted && (type !== ThreadType.Group || a.notify_groups)) {
       const who = type === ThreadType.Group ? `${d.dName}: ` : "";
-      pushToUser(acc.userId, {
-        title: prefs.push_preview ? `${info.name} · ${a.name || "Zalo"}` : a.name || "Zalo Multi",
-        body: prefs.push_preview ? who + text : "Bạn có tin nhắn mới",
-        icon: prefs.push_preview ? info.avatar || undefined : undefined,
-        tag: `${acc.id}-${type}-${threadId}`,
-        url: `#/a/${acc.id}/${type}/${threadId}`,
-        badge: prefs.app_badge ? unreadTotal(acc.userId) : 0,
-      });
+      for (const uid of audience(acc.id)) {
+        const prefs = userPrefs(uid);
+        pushToUser(uid, {
+          title: prefs.push_preview ? `${info.name} · ${a.name || "Zalo"}` : a.name || "Zalo Multi",
+          body: prefs.push_preview ? who + text : "Bạn có tin nhắn mới",
+          icon: prefs.push_preview ? info.avatar || undefined : undefined,
+          tag: `${acc.id}-${type}-${threadId}`,
+          url: `#/a/${acc.id}/${type}/${threadId}`,
+          badge: prefs.app_badge ? unreadTotal(uid) : 0,
+        });
+      }
     }
   }
   return true;
 }
+
+// Chủ tài khoản Zalo + nhân viên được giao: cùng nhận tin realtime và thông báo
+export function audience(accountId) {
+  return db.prepare(
+    `SELECT user_id FROM zalo_accounts WHERE id = ? UNION
+     SELECT s.user_id FROM account_shares s JOIN users u ON u.id = s.user_id WHERE s.account_id = ? AND u.disabled = 0`
+  ).all(accountId, accountId).map((r) => r.user_id);
+}
+const emitAcc = (accountId, event, data) => { for (const uid of audience(accountId)) emit(uid, event, data); };
+// Điều kiện SQL "tài khoản Zalo mà người dùng được dùng" (của mình hoặc được giao)
+const myAccounts = (userId) =>
+  `(SELECT id FROM zalo_accounts WHERE user_id = ${Number(userId)} UNION SELECT account_id FROM account_shares WHERE user_id = ${Number(userId)})`;
 
 function userPrefs(userId) {
   const row = db.prepare("SELECT prefs FROM users WHERE id = ?").get(userId);
@@ -174,13 +188,13 @@ function userPrefs(userId) {
 export function unreadTotal(userId) {
   return db.prepare(
     `SELECT COALESCE(SUM(t.unread), 0) n FROM threads t JOIN zalo_accounts a ON a.id = t.account_id
-     WHERE a.user_id = ? AND a.notify = 1 AND t.muted = 0 AND (t.type = 0 OR a.notify_groups = 1)`
-  ).get(userId).n;
+     WHERE a.id IN ${myAccounts(userId)} AND a.notify = 1 AND t.muted = 0 AND (t.type = 0 OR a.notify_groups = 1)`
+  ).get().n;
 }
 
 function setStatus(accountId, userId, status, msg = null) {
   db.prepare("UPDATE zalo_accounts SET status = ?, status_msg = ? WHERE id = ?").run(status, msg, accountId);
-  emit(userId, "account", { id: accountId, status, statusMsg: msg });
+  emitAcc(accountId, "account", { id: accountId, status, statusMsg: msg });
 }
 
 // ---------- Đồng bộ tin cũ ----------
@@ -226,7 +240,7 @@ function attach(accountId, userId, api) {
   l.on("reaction", (r) => { try { handleReaction(acc, r); } catch (e) { console.error("cảm xúc lỗi", e); } });
   l.on("old_reactions", (list) => { for (const r of list) try { handleReaction(acc, r, true); } catch {} });
   l.on("undo", (u) => { try { handleUndo(acc, u); } catch (e) { console.error("thu hồi lỗi", e); } });
-  l.on("typing", (t) => emit(userId, "typing", { accountId, threadId: String(t.threadId), type: t.type, uid: String(t.data?.uid || "") }));
+  l.on("typing", (t) => emitAcc(accountId, "typing", { accountId, threadId: String(t.threadId), type: t.type, uid: String(t.data?.uid || "") }));
   l.on("error", (e) => console.error(`zalo #${accountId} lỗi`, e?.message || e));
   l.on("closed", (code, reason) => {
     if (live.get(accountId) !== acc) return; // đã được thay thế/gỡ
@@ -341,13 +355,23 @@ export function cancelQrLogin(user, key) {
 }
 
 // ---------- Thao tác cho API ----------
-function ownAccount(user, accountId) {
-  const row = db.prepare("SELECT * FROM zalo_accounts WHERE id = ? AND user_id = ?").get(Number(accountId), user.id);
-  if (!row) throw httpError(404, "Không tìm thấy tài khoản");
-  return row;
+// Quyền với một tài khoản Zalo: view (chỉ xem) < reply (được trả lời) < owner (chủ)
+const LEVEL = { view: 0, reply: 1, owner: 2 };
+export function accessOf(user, accountId) {
+  const row = db.prepare("SELECT * FROM zalo_accounts WHERE id = ?").get(Number(accountId));
+  if (!row) return null;
+  if (row.user_id === user.id) return { row, access: "owner" };
+  const sh = db.prepare("SELECT can_reply FROM account_shares WHERE account_id = ? AND user_id = ?").get(row.id, user.id);
+  return sh ? { row, access: sh.can_reply ? "reply" : "view" } : null;
 }
-function liveApi(user, accountId) {
-  ownAccount(user, accountId);
+export function ownAccount(user, accountId, need = "view") {
+  const a = accessOf(user, accountId);
+  if (!a) throw httpError(404, "Không tìm thấy tài khoản");
+  if (LEVEL[a.access] < LEVEL[need]) throw httpError(403, need === "owner" ? "Chỉ chủ tài khoản Zalo làm được việc này" : "Bạn chỉ có quyền xem tài khoản này");
+  return Object.assign(a.row, { access: a.access });
+}
+function liveApi(user, accountId, need = "reply") {
+  ownAccount(user, accountId, need);
   const acc = live.get(Number(accountId));
   if (!acc) throw httpError(409, "Tài khoản Zalo chưa kết nối");
   return acc.api;
@@ -356,13 +380,48 @@ function liveApi(user, accountId) {
 export function listAccounts(user) {
   return db.prepare(
     `SELECT a.id, a.zalo_uid zaloUid, a.name, a.avatar, a.status, a.status_msg statusMsg, a.notify, a.notify_groups notifyGroups,
-            (SELECT COALESCE(SUM(unread),0) FROM threads t WHERE t.account_id = a.id AND t.muted = 0) unread
-     FROM zalo_accounts a WHERE a.user_id = ? ORDER BY a.created_at`
-  ).all(user.id);
+            (SELECT COALESCE(SUM(unread),0) FROM threads t WHERE t.account_id = a.id AND t.muted = 0) unread,
+            CASE WHEN a.user_id = ? THEN 'owner' WHEN s.can_reply = 1 THEN 'reply' ELSE 'view' END access,
+            CASE WHEN a.user_id = ? THEN NULL ELSE o.username END owner, a.user_id ownerId
+     FROM zalo_accounts a JOIN users o ON o.id = a.user_id
+     LEFT JOIN account_shares s ON s.account_id = a.id AND s.user_id = ?
+     WHERE a.user_id = ? OR s.user_id IS NOT NULL ORDER BY a.user_id != ?, a.created_at`
+  ).all(user.id, user.id, user.id, user.id, user.id);
+}
+
+// ---------- Giao tài khoản cho nhân viên ----------
+export function listShares(user, accountId) {
+  const row = ownAccount(user, accountId, "owner");
+  return db.prepare(
+    `SELECT u.id userId, u.username, s.can_reply canReply, s.created_at createdAt FROM account_shares s JOIN users u ON u.id = s.user_id
+     WHERE s.account_id = ? ORDER BY u.username`
+  ).all(row.id);
+}
+export function saveShare(user, accountId, { username, canReply }) {
+  const row = ownAccount(user, accountId, "owner");
+  const u = db.prepare("SELECT id FROM users WHERE username = ?").get(String(username || "").trim());
+  if (!u) throw httpError(404, "Không có người dùng này trong app (nhân viên cần đăng ký tài khoản app trước)");
+  if (u.id === row.user_id) throw httpError(400, "Đây là chủ tài khoản");
+  db.prepare(
+    `INSERT INTO account_shares (account_id, user_id, can_reply, created_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(account_id, user_id) DO UPDATE SET can_reply = excluded.can_reply`
+  ).run(row.id, u.id, canReply ? 1 : 0, now());
+  emit(u.id, "accounts", {});
+  return listShares(user, accountId);
+}
+export function removeShare(user, accountId, userId) {
+  const row = ownAccount(user, accountId, "owner");
+  db.prepare("DELETE FROM account_shares WHERE account_id = ? AND user_id = ?").run(row.id, Number(userId));
+  emit(Number(userId), "accounts", {});
+  return listShares(user, accountId);
+}
+// Nhân viên tự bỏ tài khoản được giao
+export function leaveShare(user, accountId) {
+  db.prepare("DELETE FROM account_shares WHERE account_id = ? AND user_id = ?").run(Number(accountId), user.id);
 }
 
 export function removeAccount(user, accountId) {
-  const row = ownAccount(user, accountId);
+  const row = ownAccount(user, accountId, "owner");
   const acc = live.get(row.id);
   live.delete(row.id);
   try { acc?.api.listener.stop(); } catch {}
@@ -371,36 +430,57 @@ export function removeAccount(user, accountId) {
 }
 
 export function reconnect(user, accountId) {
-  const row = ownAccount(user, accountId);
+  const row = ownAccount(user, accountId, "reply");
   connect(row.id).catch(() => {});
 }
 
-// Bộ lọc danh sách hội thoại: all | unread | user | group
-const THREAD_FILTER = { unread: "AND t.unread > 0", user: "AND t.type = 0", group: "AND t.type = 1" };
+// Bộ lọc danh sách hội thoại: all | unread | user | group | unanswered | label:<id>
+const THREAD_FILTER = {
+  unread: "AND t.unread > 0", user: "AND t.type = 0", group: "AND t.type = 1",
+  // chat cá nhân mà tin cuối cùng là của khách
+  unanswered: `AND t.type = 0 AND (SELECT is_self FROM messages m WHERE m.account_id = t.account_id AND m.thread_id = t.thread_id
+    AND m.type = t.type AND m.recalled = 0 ORDER BY m.ts DESC LIMIT 1) = 0`,
+};
+function threadFilter(f = "") {
+  const lb = /^label:(\d+)$/.exec(f);
+  if (lb) return `AND EXISTS (SELECT 1 FROM thread_labels l WHERE l.account_id = t.account_id AND l.thread_id = t.thread_id AND l.type = t.type AND l.label_id = ${Number(lb[1])})`;
+  return THREAD_FILTER[f] || "";
+}
+// Gắn danh sách id nhãn vào từng hội thoại
+function withLabels(threads, accountIds) {
+  if (!threads.length) return threads;
+  const rows = db.prepare(`SELECT account_id, thread_id, type, label_id FROM thread_labels WHERE account_id IN (${accountIds.map(Number).join(",")})`).all();
+  const map = new Map();
+  for (const r of rows) { const k = `${r.account_id}:${r.type}:${r.thread_id}`; (map.get(k) || map.set(k, []).get(k)).push(r.label_id); }
+  for (const t of threads) t.labels = map.get(`${t.accountId ?? accountIds[0]}:${t.type}:${t.threadId}`) || [];
+  return threads;
+}
 const likeArg = (q) => `%${unaccent(q).replace(/[\\%_]/g, "\\$&")}%`;
 
 export function listThreads(user, accountId, q = "", filter = "all") {
   const row = ownAccount(user, accountId);
-  return db.prepare(
+  const rows = db.prepare(
     `SELECT thread_id threadId, type, name, avatar, last_ts lastTs, last_text lastText, unread, muted, pinned
-     FROM threads t WHERE account_id = ? AND (? = '' OR unaccent(name) LIKE ? ESCAPE '\\') ${THREAD_FILTER[filter] || ""}
+     FROM threads t WHERE account_id = ? AND (? = '' OR unaccent(name) LIKE ? ESCAPE '\\') ${threadFilter(filter)}
      ORDER BY pinned > 0 DESC, pinned DESC, last_ts DESC LIMIT 300`
   ).all(row.id, q, likeArg(q));
+  return withLabels(rows, [row.id]);
 }
 
 // Hộp thư chung: hội thoại của mọi tài khoản Zalo của người dùng, mới nhất lên đầu
 export function inbox(user, filter = "all") {
-  return db.prepare(
+  const rows = db.prepare(
     `SELECT t.account_id accountId, a.name accountName, a.avatar accountAvatar, t.thread_id threadId, t.type, t.name, t.avatar,
             t.last_ts lastTs, t.last_text lastText, t.unread, t.muted, t.pinned
      FROM threads t JOIN zalo_accounts a ON a.id = t.account_id
-     WHERE a.user_id = ? AND t.last_ts > 0 ${THREAD_FILTER[filter] || ""}
+     WHERE a.id IN ${myAccounts(user.id)} AND t.last_ts > 0 ${threadFilter(filter)}
      ORDER BY t.last_ts DESC LIMIT 200`
-  ).all(user.id);
+  ).all();
+  return withLabels(rows, [...new Set(rows.map((r) => r.accountId))]);
 }
 
 export function setThreadPinned(user, accountId, type, threadId, pinned) {
-  const row = ownAccount(user, accountId);
+  const row = ownAccount(user, accountId, "reply");
   db.prepare("UPDATE threads SET pinned = ? WHERE account_id = ? AND type = ? AND thread_id = ?").run(pinned ? now() : 0, row.id, Number(type), String(threadId));
 }
 
@@ -414,10 +494,10 @@ export function searchMessages(user, accountId, q, { type, threadId } = {}) {
             m.from_name fromName, m.is_self isSelf, m.ts, m.kind, m.text, m.title
      FROM messages m JOIN zalo_accounts a ON a.id = m.account_id
      LEFT JOIN threads t ON t.account_id = m.account_id AND t.thread_id = m.thread_id AND t.type = m.type
-     WHERE a.user_id = ? AND (? IS NULL OR m.account_id = ?) AND (? IS NULL OR (m.type = ? AND m.thread_id = ?)) AND m.recalled = 0
+     WHERE a.id IN ${myAccounts(user.id)} AND (? IS NULL OR m.account_id = ?) AND (? IS NULL OR (m.type = ? AND m.thread_id = ?)) AND m.recalled = 0
        AND (unaccent(m.text) LIKE ? ESCAPE '\\' OR unaccent(m.title) LIKE ? ESCAPE '\\')
      ORDER BY m.ts DESC LIMIT 80`
-  ).all(user.id, acc, acc, threadId == null ? null : 1, Number(type), String(threadId ?? ""), likeArg(q), likeArg(q));
+  ).all(acc, acc, threadId == null ? null : 1, Number(type), String(threadId ?? ""), likeArg(q), likeArg(q));
 }
 
 const MSG_COLS = "id, msg_id msgId, from_uid fromUid, from_name fromName, ts, is_self isSelf, kind, text, url, thumb, title, media, quote, recalled";
@@ -440,7 +520,7 @@ export function listMessages(user, accountId, type, threadId, before, { after, a
     m.reactions = react.all(row.id, m.msgId);
     if (m.recalled) Object.assign(m, { kind: "recalled", text: null, url: null, thumb: null, media: null });
   }
-  if (wasUnread && !before && !around) sendSeen(row.id, Number(type), String(threadId));
+  if (wasUnread && !before && !around && row.access !== "view") sendSeen(row.id, Number(type), String(threadId));
   return rows.reverse();
 }
 
@@ -497,7 +577,7 @@ export async function fetchHistory(user, accountId, type, threadId) {
   if (Number(type) !== ThreadType.Group) return { added: 0 };
   const key = `${row.id}:${threadId}`;
   if (historyDone.has(key)) return { added: 0 };
-  const api = liveApi(user, accountId);
+  const api = liveApi(user, accountId, "view");
   const acc = live.get(row.id);
   const r = await api.getGroupChatHistory(String(threadId), Math.min(500, getSetting("group_history")) || 50);
   historyDone.add(key);
@@ -508,12 +588,12 @@ export async function fetchHistory(user, accountId, type, threadId) {
 
 // ---------- Cài đặt thông báo ----------
 export function setAccountNotify(user, accountId, { notify, notifyGroups }) {
-  const row = ownAccount(user, accountId);
+  const row = ownAccount(user, accountId, "owner");
   if (notify !== undefined) db.prepare("UPDATE zalo_accounts SET notify = ? WHERE id = ?").run(notify ? 1 : 0, row.id);
   if (notifyGroups !== undefined) db.prepare("UPDATE zalo_accounts SET notify_groups = ? WHERE id = ?").run(notifyGroups ? 1 : 0, row.id);
 }
 export function setThreadMuted(user, accountId, type, threadId, muted) {
-  const row = ownAccount(user, accountId);
+  const row = ownAccount(user, accountId, "reply");
   db.prepare("UPDATE threads SET muted = ? WHERE account_id = ? AND type = ? AND thread_id = ?").run(muted ? 1 : 0, row.id, Number(type), String(threadId));
 }
 export function markAllRead(user, accountId) {
@@ -545,6 +625,14 @@ export function gallery(user, accountId, type, threadId, kind = "media", before)
   ).all(row.id, Number(type), String(threadId), Number(before) || 9e15);
 }
 
+// Gửi tin chữ từ server (tin hẹn giờ): cần tài khoản đang kết nối
+export async function sendAsAccount(accountId, type, threadId, text) {
+  const acc = live.get(Number(accountId));
+  if (!acc) throw httpError(409, "Tài khoản Zalo chưa kết nối");
+  return acc.api.sendMessage({ msg: text }, String(threadId), tType(type));
+}
+export const isLive = (accountId) => live.has(Number(accountId));
+
 // ---------- Tin mẫu (trả lời nhanh) ----------
 export const listQuickReplies = (user) =>
   db.prepare("SELECT id, shortcut, text FROM quick_replies WHERE user_id = ? ORDER BY shortcut").all(user.id);
@@ -569,8 +657,8 @@ export function deleteQuickReply(user, id) {
 export function mediaRow(user, messageId) {
   return db.prepare(
     `SELECT m.media, m.title FROM messages m JOIN zalo_accounts a ON a.id = m.account_id
-     WHERE m.id = ? AND a.user_id = ? AND m.media IS NOT NULL`
-  ).get(Number(messageId), user.id);
+     WHERE m.id = ? AND a.id IN ${myAccounts(user.id)} AND m.media IS NOT NULL`
+  ).get(Number(messageId));
 }
 
 // ---------- Tính năng chat giống Zalo ----------
@@ -596,12 +684,12 @@ function handleReaction(acc, r, old = false) {
       `INSERT INTO reactions (account_id, msg_id, uid, icon, name, ts) VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(account_id, msg_id, uid) DO UPDATE SET icon = excluded.icon, name = COALESCE(excluded.name, name), ts = excluded.ts`
     ).run(acc.id, msgId, uid, c.rIcon, r.data.dName || null, Number(r.data.ts) || now());
-    emit(acc.userId, "reaction", { accountId: acc.id, threadId: m.thread_id, type: m.type, msgId, reactions: reactionsOf(acc.id, msgId) });
+    emitAcc(acc.id, "reaction", { accountId: acc.id, threadId: m.thread_id, type: m.type, msgId, reactions: reactionsOf(acc.id, msgId) });
     // Báo khi có người thả cảm xúc vào tin của mình
     if (!old && c.rIcon && m.is_self && !r.isSelf) {
       const a = db.prepare("SELECT name, notify FROM zalo_accounts WHERE id = ?").get(acc.id);
       const th = db.prepare("SELECT name, muted FROM threads WHERE account_id = ? AND thread_id = ? AND type = ?").get(acc.id, m.thread_id, m.type);
-      if (a?.notify && !th?.muted && userPrefs(acc.userId).push_preview) pushToUser(acc.userId, {
+      if (a?.notify && !th?.muted) for (const uid of audience(acc.id)) if (userPrefs(uid).push_preview) pushToUser(uid, {
         title: `${th?.name || "Zalo"} · ${a.name}`, body: `${r.data.dName || "Ai đó"} đã bày tỏ cảm xúc ${emoticons(c.rIcon)} với tin nhắn của bạn`,
         tag: `${acc.id}-${m.type}-${m.thread_id}`, url: `#/a/${acc.id}/${m.type}/${m.thread_id}`,
       });
@@ -616,7 +704,7 @@ function handleUndo(acc, u) {
   db.prepare("UPDATE messages SET recalled = 1 WHERE id = ?").run(m.id);
   const last = db.prepare("SELECT msg_id FROM messages WHERE account_id = ? AND thread_id = ? AND type = ? ORDER BY ts DESC LIMIT 1").get(acc.id, m.thread_id, m.type);
   if (last?.msg_id === msgId) db.prepare("UPDATE threads SET last_text = ? WHERE account_id = ? AND thread_id = ? AND type = ?").run("Tin nhắn đã được thu hồi", acc.id, m.thread_id, m.type);
-  emit(acc.userId, "recall", { accountId: acc.id, threadId: m.thread_id, type: m.type, msgId });
+  emitAcc(acc.id, "recall", { accountId: acc.id, threadId: m.thread_id, type: m.type, msgId });
 }
 
 export async function react(user, accountId, msgId, icon) {
@@ -631,7 +719,7 @@ export async function react(user, accountId, msgId, icon) {
     ON CONFLICT(account_id, msg_id, uid) DO UPDATE SET icon = excluded.icon, ts = excluded.ts`).run(Number(accountId), r.msgId, me, icon, now());
   else db.prepare("DELETE FROM reactions WHERE account_id = ? AND msg_id = ? AND uid = ?").run(Number(accountId), r.msgId, me);
   const reactions = reactionsOf(Number(accountId), r.msgId);
-  emit(user.id, "reaction", { accountId: Number(accountId), threadId: r.threadId, type: r.type, msgId: r.msgId, reactions });
+  emitAcc(Number(accountId), "reaction", { accountId: Number(accountId), threadId: r.threadId, type: r.type, msgId: r.msgId, reactions });
   return { reactions };
 }
 
@@ -641,12 +729,12 @@ export async function recall(user, accountId, msgId) {
   if (!r.isSelf) throw httpError(403, "Chỉ thu hồi được tin của mình");
   await api.undo({ msgId: r.msgId, cliMsgId: r.cliMsgId }, r.threadId, tType(r.type));
   db.prepare("UPDATE messages SET recalled = 1 WHERE account_id = ? AND msg_id = ?").run(Number(accountId), r.msgId);
-  emit(user.id, "recall", { accountId: Number(accountId), threadId: r.threadId, type: r.type, msgId: r.msgId });
+  emitAcc(Number(accountId), "recall", { accountId: Number(accountId), threadId: r.threadId, type: r.type, msgId: r.msgId });
   return { ok: true };
 }
 
 export async function deleteForMe(user, accountId, msgId) {
-  const row = ownAccount(user, accountId);
+  const row = ownAccount(user, accountId, "reply");
   const r = rawMsg(row.id, msgId);
   const acc = live.get(row.id);
   if (acc) {
@@ -714,19 +802,19 @@ const pick = (p) => p && ({
   phone: p.phoneNumber || "", isFriend: !!p.isFr, lastActive: p.lastActionTime || null,
 });
 export async function userProfile(user, accountId, uid) {
-  const api = liveApi(user, accountId);
+  const api = liveApi(user, accountId, "view");
   const r = await api.getUserInfo(String(uid));
   const p = r.changed_profiles?.[uid] || r.changed_profiles?.[`${uid}_0`] || Object.values(r.changed_profiles || {})[0];
   if (!p) throw httpError(404, "Không lấy được thông tin");
   return pick(p);
 }
 export async function ownProfile(user, accountId) {
-  const api = liveApi(user, accountId);
+  const api = liveApi(user, accountId, "view");
   const info = await api.fetchAccountInfo();
   return pick(info?.profile || info);
 }
 export async function groupProfile(user, accountId, gid) {
-  const api = liveApi(user, accountId);
+  const api = liveApi(user, accountId, "view");
   const g = (await api.getGroupInfo(String(gid))).gridInfoMap?.[gid];
   if (!g) throw httpError(404, "Không lấy được thông tin nhóm");
   let members = (g.currentMems || []).map((m) => ({ uid: String(m.id), name: m.dName || m.zaloName, avatar: m.avatar }));

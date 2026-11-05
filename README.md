@@ -23,6 +23,10 @@ Bản chạy thử: <https://nguyenhuyhoang.website/app/>
 - Lưu ảnh, file, video, tin thoại về server hoặc thẳng lên **Google Drive** (xem lại được khi link Zalo hết hạn)
 - Số tin chưa đọc trên avatar và trên icon app (iOS 16.4+/Android/máy tính)
 - Cài đặt thông báo: theo tài khoản Zalo, tin nhóm, từng hội thoại; ẩn nội dung tin trong thông báo
+- **Chăm sóc khách**: nhãn (Khách mới, Đã chốt, Cần gọi lại…) gắn cho hội thoại và lọc theo nhãn, lọc *Chưa trả lời*, ghi chú nội bộ theo từng khách (ghi rõ ai viết)
+- **Hẹn giờ gửi tin** (server tự gửi đúng giờ, không cần mở app) và **nhắc việc** qua thông báo push; trang *Lịch hẹn & nhắc việc* tổng hợp
+- **Giao tài khoản Zalo cho nhân viên**: chủ tài khoản giao cho người dùng app khác với quyền *chỉ xem* hoặc *được trả lời*; nhân viên cũng nhận thông báo tin mới
+- **Thống kê** theo tài khoản: tin đến/gửi mỗi ngày, thời gian trả lời trung bình, khách chưa được trả lời, số khách theo nhãn
 - Trang quản trị (`#/admin`): người dùng (khoá, cấp quyền, đặt lại mật khẩu, xoá), mã mời, bật/tắt tính năng, thống kê
 - Thông báo push (Android, máy tính; iPhone từ iOS 16.4 khi đã thêm vào màn hình chính)
 - Realtime qua Server-Sent Events, tự kết nối lại

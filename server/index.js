@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { PORT, HOST, BASE_PATH, VAPID } from "./config.js";
 import * as auth from "./auth.js";
 import * as zalo from "./zalo.js";
+import * as crm from "./crm.js";
 import { saveSubscription, removeSubscription, addStream, pushToUser } from "./push.js";
 import * as admin from "./admin.js";
 import { serveMedia } from "./media.js";
@@ -155,6 +156,28 @@ route("GET", "/api/accounts/:id/users/:uid", async (req, res, { user, p }) => se
 route("GET", "/api/accounts/:id/groups/:gid", async (req, res, { user, p }) => send(res, 200, await zalo.groupProfile(user, p.id, p.gid)));
 route("POST", "/api/accounts/:id/threads/:type/:tid/image", async (req, res, { user, p }) =>
   send(res, 200, await zalo.sendImage(user, p.id, p.type, p.tid, await readJson(req))));
+
+// ---------- giao tài khoản cho nhân viên ----------
+route("GET", "/api/accounts/:id/shares", (req, res, { user, p }) => send(res, 200, { shares: zalo.listShares(user, p.id) }));
+route("POST", "/api/accounts/:id/shares", async (req, res, { user, p }) => send(res, 200, { shares: zalo.saveShare(user, p.id, await readJson(req)) }));
+route("DELETE", "/api/accounts/:id/shares/:uid", (req, res, { user, p }) => send(res, 200, { shares: zalo.removeShare(user, p.id, p.uid) }));
+route("POST", "/api/accounts/:id/leave", (req, res, { user, p }) => { zalo.leaveShare(user, p.id); send(res, 200, { ok: true }); });
+
+// ---------- chăm sóc khách ----------
+route("GET", "/api/labels", (req, res, { user }) => send(res, 200, { labels: crm.visibleLabels(user), colors: crm.LABEL_COLORS }));
+route("POST", "/api/labels", async (req, res, { user }) => send(res, 200, { labels: crm.saveLabel(user, await readJson(req)) }));
+route("DELETE", "/api/labels/:lid", (req, res, { user, p }) => send(res, 200, { labels: crm.deleteLabel(user, p.lid) }));
+route("GET", "/api/accounts/:id/threads/:type/:tid/customer", (req, res, { user, p }) => send(res, 200, crm.customer(user, p.id, p.type, p.tid)));
+route("POST", "/api/accounts/:id/threads/:type/:tid/labels", async (req, res, { user, p }) =>
+  send(res, 200, { labels: crm.setThreadLabels(user, p.id, p.type, p.tid, (await readJson(req)).labels) }));
+route("POST", "/api/accounts/:id/threads/:type/:tid/notes", async (req, res, { user, p }) =>
+  send(res, 200, { notes: crm.addNote(user, p.id, p.type, p.tid, (await readJson(req)).text) }));
+route("DELETE", "/api/notes/:nid", (req, res, { user, p }) => send(res, 200, crm.deleteNote(user, p.nid)));
+route("POST", "/api/accounts/:id/threads/:type/:tid/schedules", async (req, res, { user, p }) =>
+  send(res, 200, { schedules: crm.createSchedule(user, p.id, p.type, p.tid, await readJson(req)) }));
+route("GET", "/api/schedules", (req, res, { user }) => send(res, 200, { schedules: crm.listSchedules(user) }));
+route("DELETE", "/api/schedules/:sid", (req, res, { user, p }) => send(res, 200, crm.cancelSchedule(user, p.sid)));
+route("GET", "/api/accounts/:id/stats", (req, res, { user, p, url }) => send(res, 200, crm.stats(user, p.id, url.searchParams.get("days"))));
 
 // ---------- quản trị ----------
 const adminRoute = (method, pattern, handler) =>
