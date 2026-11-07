@@ -252,3 +252,51 @@ select { font: inherit; color: var(--fg); background: var(--bg2); border: 1px so
 .secret code { font-size: 15px; background: var(--bg2); padding: 3px 6px; border-radius: 6px; word-break: break-all; }
 .act .row { padding: 8px 16px; }
 .warn-row { background: color-mix(in srgb, var(--danger) 7%, transparent); }
+
+/* danh bạ & nhóm */
+.flexrow { display: flex; align-items: center; gap: 8px; } .flexrow.wrap { flex-wrap: wrap; } .center-row { justify-content: center; }
+.flexrow input { margin: 0; }
+.rowbtn { width: 100%; background: none; border: 0; border-bottom: 1px solid var(--line); font: inherit; text-align: left; cursor: pointer; }
+.rowlink { display: flex; align-items: center; gap: 12px; color: var(--fg); min-width: 0; }
+li.sec { list-style: none; background: var(--bg2); }
+.dot-on { width: 10px; height: 10px; border-radius: 50%; background: #1e8e3e; flex: none; }
+.filebtn { margin: 4px 4px 4px 0; display: inline-flex; align-items: center; color: var(--fg); font-size: 15px; cursor: pointer; }
+.found { border: 0; padding: 12px 0 0; }
+.modal.picker { max-width: 460px; height: min(640px, 90dvh); display: flex; flex-direction: column; text-align: left; gap: 8px; }
+.picker .list { flex: 1; min-height: 0; border: 1px solid var(--line); border-radius: 10px; }
+.picker .chips { max-height: 72px; flex-wrap: wrap; overflow-y: auto; }
+.picker .chips:empty { display: none; }
+label.row.pick { margin: 0; cursor: pointer; color: var(--fg); font-size: 16px; }
+label.row.pick input { width: 20px; height: 20px; margin: 0; flex: none; }
+.avpick { margin: 0; cursor: pointer; } .avpick .avatar.ph { font-size: 22px; }
+
+/* bố cục máy tính kiểu Zalo PC */
+#app.pcmode { max-width: none; }
+.pc { display: grid; grid-template-columns: 68px minmax(300px, 360px) 1fr; height: 100dvh; min-height: 0; }
+.pc-rail { background: var(--brand); display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 0; overflow-y: auto; }
+.pc-rail a { position: relative; width: 50px; height: 50px; flex: none; display: flex; align-items: center; justify-content: center;
+  border-radius: 12px; color: #fff; font-size: 22px; }
+.pc-rail a:hover { background: rgba(255,255,255,.15); }
+.pc-rail a.on { background: rgba(255,255,255,.3); }
+.pc-rail .ab { top: 2px; right: 0; }
+.pc-rail .avw .ab { top: -5px; right: -8px; }
+.pc-rail .rail-warn { position: absolute; bottom: 4px; right: 4px; width: 16px; height: 16px; border-radius: 50%; background: var(--danger); color: #fff;
+  font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+.rail-sep { width: 34px; height: 1px; background: rgba(255,255,255,.35); margin: 4px 0; flex: none; }
+.pc-rail .grow { flex: 1; }
+.pc-list, .pc-main { display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
+.pc-list { border-right: 1px solid var(--line); }
+.pc-list .bar { background: var(--bg); color: var(--fg); border-bottom: 1px solid var(--line); }
+.pc-list .bar .icon-btn { color: var(--fg); }
+.pc-list .bar a.icon-btn[aria-label="Quay lại"] { display: none; }
+.pc .row { cursor: pointer; }
+.pc .row:hover { background: var(--bg2); }
+.pc-list .row.on { background: var(--me); }
+.pc-main > .scroll, .pc-main > main { max-width: none; }
+.pc-main .scroll:not(.chat) > * { max-width: 760px; margin-left: auto; margin-right: auto; }
+.pc-main .scroll:not(.chat) > .card.mx { margin-left: auto; margin-right: auto; }
+.pc-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 24px; background: var(--bg2); }
+.pc-empty .big-ico { font-size: 56px; width: auto; height: auto; }
+.pc-empty h2 { margin: 8px 0; color: var(--brand); }
+.pcmode ~ .sheet-bg { align-items: center; justify-content: center; }
+.pcmode ~ .sheet-bg .sheet { max-width: 420px; border-radius: 14px; padding-bottom: 8px; }

@@ -31,6 +31,9 @@ Bản chạy thử: <https://nguyenhuyhoang.website/app/>
 - **Xuất lịch sử chat** một hội thoại ra trang HTML (xem, in PDF) hoặc CSV (mở bằng Excel)
 - **Đăng nhập 2 lớp** (mã 6 số từ Google Authenticator/Authy, kèm 8 mã dự phòng); quản trị viên tắt được 2 lớp cho người mất điện thoại
 - **Nhật ký hoạt động** (`#/activity`): đăng nhập, gửi tin, xoá tài khoản, thao tác quản trị… (không ghi nội dung tin, lưu 180 ngày); chủ tài khoản Zalo xem được việc nhân viên làm
+- **Danh bạ** (`#/a/<id>/contacts`): bạn bè A–Z có tìm không dấu, tên gợi nhớ (đồng bộ Zalo), **tìm theo số điện thoại** để nhắn tin / kết bạn, lời mời kết bạn đã nhận / đã gửi, chặn, xoá bạn; **kiểm tra nhiều số** (dán hoặc file CSV/TXT, tối đa 200 số) xem số nào có Zalo, tải kết quả CSV – chỉ tra cứu, không tự kết bạn hàng loạt
+- **Nhóm**: tạo nhóm (tên, ảnh, chọn thành viên từ danh bạ), đổi tên/ảnh, thêm/xoá thành viên, bổ nhiệm phó nhóm, bật/tắt link mời, rời nhóm, giải tán (trưởng nhóm)
+- **Bố cục máy tính kiểu Zalo PC** (màn hình ≥ 900px): cột tài khoản · danh sách hội thoại · khung chat cạnh nhau
 - Trang quản trị (`#/admin`): người dùng (khoá, cấp quyền, đặt lại mật khẩu, xoá), mã mời, bật/tắt tính năng, thống kê
 - Thông báo push (Android, máy tính; iPhone từ iOS 16.4 khi đã thêm vào màn hình chính)
 - Realtime qua Server-Sent Events, tự kết nối lại

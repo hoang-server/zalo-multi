@@ -6,6 +6,7 @@ import { PORT, HOST, BASE_PATH, VAPID } from "./config.js";
 import * as auth from "./auth.js";
 import * as zalo from "./zalo.js";
 import * as crm from "./crm.js";
+import * as contacts from "./contacts.js";
 import { logActivity, listActivity } from "./activity.js";
 import * as alerts from "./alerts.js";
 import { exportThread } from "./export.js";
@@ -90,6 +91,9 @@ const LOG = {
   "POST /api/admin/users/:uid": "admin_user", "POST /api/admin/users/:uid/reset-password": "admin_reset_password",
   "POST /api/admin/users/:uid/reset-otp": "admin_reset_otp", "DELETE /api/admin/users/:uid": "admin_delete_user",
   "POST /api/admin/settings": "admin_settings",
+  "POST /api/accounts/:id/friends/:uid/:action": (p) => `friend_${p.action}`,
+  "POST /api/accounts/:id/groups": "group_create",
+  "POST /api/accounts/:id/groups/:gid/:action": (p) => `group_${p.action}`,
 };
 
 route("GET", "/api/me", (req, res, { user }) => send(res, 200, {
@@ -218,6 +222,20 @@ route("GET", "/api/accounts/:id/groups/:gid", async (req, res, { user, p }) => s
 route("POST", "/api/accounts/:id/threads/:type/:tid/image", async (req, res, { user, p }) =>
   send(res, 200, await zalo.sendImage(user, p.id, p.type, p.tid, await readJson(req))));
 
+// ---------- danh bạ & nhóm ----------
+route("GET", "/api/accounts/:id/friends", async (req, res, { user, p, url }) =>
+  send(res, 200, { friends: await contacts.friends(user, p.id, { refresh: url.searchParams.has("refresh") }) }));
+route("GET", "/api/accounts/:id/find", async (req, res, { user, p, url }) => send(res, 200, await contacts.findByPhone(user, p.id, url.searchParams.get("phone"))));
+route("POST", "/api/accounts/:id/check-phones", async (req, res, { user, p }) => send(res, 200, await contacts.checkPhones(user, p.id, (await readJson(req)).phones)));
+route("POST", "/api/accounts/:id/open-chat", async (req, res, { user, p }) => send(res, 200, contacts.openChat(user, p.id, await readJson(req))));
+route("GET", "/api/accounts/:id/friend-requests", async (req, res, { user, p }) => send(res, 200, await contacts.friendRequests(user, p.id)));
+route("POST", "/api/accounts/:id/friends/:uid/:action", async (req, res, { user, p }) =>
+  send(res, 200, await contacts.friendAction(user, p.id, p.uid, p.action, await readJson(req))));
+route("POST", "/api/accounts/:id/groups", async (req, res, { user, p }) => send(res, 200, await contacts.createGroup(user, p.id, await readJson(req))));
+route("GET", "/api/accounts/:id/groups/:gid/link", async (req, res, { user, p }) => send(res, 200, await contacts.groupLink(user, p.id, p.gid)));
+route("POST", "/api/accounts/:id/groups/:gid/:action", async (req, res, { user, p }) =>
+  send(res, 200, await contacts.groupAction(user, p.id, p.gid, p.action, await readJson(req))));
+
 // ---------- giao tài khoản cho nhân viên ----------
 route("GET", "/api/accounts/:id/shares", (req, res, { user, p }) => send(res, 200, { shares: zalo.listShares(user, p.id) }));
 route("POST", "/api/accounts/:id/shares", async (req, res, { user, p }) => send(res, 200, { shares: zalo.saveShare(user, p.id, await readJson(req)) }));
@@ -275,7 +293,8 @@ const server = http.createServer(async (req, res) => {
     const ip = String(req.headers["x-real-ip"] || req.socket.remoteAddress);
     await r.handler(req, res, { user, p: params, url, ip });
     if (r.log && res.statusCode < 400) logActivity({
-      user, ip, action: r.log, accountId: params.id, type: params.type, threadId: params.tid,
+      user, ip, action: typeof r.log === "function" ? r.log(params) : r.log, accountId: params.id,
+      type: params.gid ? 1 : params.type, threadId: params.gid || params.tid,
       detail: params.uid ? `user #${params.uid}` : params.sid ? `lịch #${params.sid}` : null,
     });
   } catch (e) {

@@ -375,7 +375,7 @@ export function ownAccount(user, accountId, need = "view") {
   if (LEVEL[a.access] < LEVEL[need]) throw httpError(403, need === "owner" ? "Chỉ chủ tài khoản Zalo làm được việc này" : "Bạn chỉ có quyền xem tài khoản này");
   return Object.assign(a.row, { access: a.access });
 }
-function liveApi(user, accountId, need = "reply") {
+export function liveApi(user, accountId, need = "reply") {
   ownAccount(user, accountId, need);
   const acc = live.get(Number(accountId));
   if (!acc) throw httpError(409, "Tài khoản Zalo chưa kết nối");
@@ -831,7 +831,9 @@ export async function groupProfile(user, accountId, gid) {
     } catch {}
   }
   const admins = new Set([String(g.creatorId), ...(g.adminIds || []).map(String)]);
-  for (const m of members) m.role = m.uid === String(g.creatorId) ? "Trưởng nhóm" : admins.has(m.uid) ? "Phó nhóm" : "";
+  const roleOf = (uid) => (uid === String(g.creatorId) ? "owner" : admins.has(uid) ? "deputy" : "");
+  for (const m of members) { m.roleKey = roleOf(m.uid); m.role = m.roleKey === "owner" ? "Trưởng nhóm" : m.roleKey === "deputy" ? "Phó nhóm" : ""; }
   members.sort((a, b) => (b.role ? 1 : 0) - (a.role ? 1 : 0));
-  return { name: g.name, avatar: g.fullAvt || g.avt, desc: g.desc || "", total: g.totalMember, created: g.createdTime || null, members };
+  const me = String(db.prepare("SELECT zalo_uid FROM zalo_accounts WHERE id = ?").get(Number(accountId))?.zalo_uid || "");
+  return { name: g.name, avatar: g.fullAvt || g.avt, desc: g.desc || "", total: g.totalMember, created: g.createdTime || null, members, myRole: roleOf(me), me };
 }

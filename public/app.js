@@ -1,6 +1,11 @@
 // Zalo Multi – giao diện web (không cần build)
 import { emoticons } from "./emoticons.js";
-const $app = document.getElementById("app");
+const ROOT = document.getElementById("app");
+// Màn hình rộng (máy tính, iPad ngang): bố cục kiểu Zalo PC – cột tài khoản | danh sách hội thoại | khung chat
+const pcMQ = matchMedia("(min-width: 900px)");
+const PC_ROUTES = new Set(["threads", "inbox", "chat", "customer", "gallery", "profile", "group", "contacts", "newgroup", "stats", "share"]);
+let $app = ROOT; // vùng nội dung chính (ở bố cục PC là cột phải)
+const listRoot = () => (state.pc ? document.getElementById("pcList") : ROOT);
 const state = { user: null, needsInvite: false, vapidKey: null, accounts: [], threads: [], messages: [], route: null, qr: null };
 
 // ---------- tiện ích ----------
@@ -60,7 +65,7 @@ function parseRoute() {
   if (h[0] === "inbox") return { name: "inbox" };
   if (h[0] === "schedule") return { name: "schedule" };
   if (h[0] === "activity") return { name: "activity" };
-  if (h[0] === "a" && h[1] && (h[2] === "share" || h[2] === "stats")) return { name: h[2], acc: Number(h[1]) };
+  if (h[0] === "a" && h[1] && (h[2] === "share" || h[2] === "stats" || h[2] === "contacts" || h[2] === "newgroup")) return { name: h[2], acc: Number(h[1]) };
   if (h[0] === "a" && h[1] && h[3] && h[4] === "crm") return { name: "customer", acc: Number(h[1]), type: Number(h[2]), tid: decodeURIComponent(h[3]) };
   if (h[0] === "a" && h[1] && h[3] && h[4] === "media") return { name: "gallery", acc: Number(h[1]), type: Number(h[2]), tid: decodeURIComponent(h[3]) };
   if (h[0] === "a" && h[1] && h[3] && h[4] === "m" && h[5]) return { name: "chat", acc: Number(h[1]), type: Number(h[2]), tid: decodeURIComponent(h[3]), around: decodeURIComponent(h[5]) };
@@ -74,6 +79,7 @@ function parseRoute() {
   return { name: "home" };
 }
 addEventListener("hashchange", render);
+pcMQ.addEventListener?.("change", () => state.user && render());
 document.addEventListener("click", (e) => { if (e.target.closest("[data-back]")) history.length > 1 ? history.back() : go("#/"); });
 navigator.serviceWorker?.addEventListener("message", (e) => { if (e.data?.type === "open") go(e.data.hash); });
 
@@ -83,22 +89,29 @@ async function render() {
   if (!state.user && r.name !== "login") return go("#/login");
   if (state.user && r.name === "login") return go("#/");
   try {
+    if (["login", "settings", "admin", "activity"].includes(r.name)) setPc(false);
     if (r.name === "login") return renderLogin();
     if (r.name === "settings") return renderSettings();
     if (r.name === "admin") return renderAdmin();
     if (r.name === "activity") return renderActivity();
     await Promise.all([loadAccounts(), loadLabels()]);
     if (r.name === "home") {
-      // Chỉ tự mở thẳng tài khoản duy nhất khi vừa mở app; bấm ‹ quay lại thì ở lại màn hình chính
-      const auto = !state.opened && state.accounts.length === 1;
+      // Chỉ tự mở thẳng tài khoản khi vừa mở app (1 tài khoản, hoặc máy tính); bấm ‹ quay lại thì ở lại màn hình chính
+      const auto = !state.opened && (state.accounts.length === 1 || (pcMQ.matches && state.accounts.length > 0));
       state.opened = true;
       if (auto) return go(`#/a/${state.accounts[0].id}`);
+      setPc(false);
       return renderHome();
     }
     state.opened = true;
-    if (r.name === "threads") return renderThreads(r.acc);
-    if (r.name === "inbox") return renderInbox();
+    if (setPc(pcMQ.matches && PC_ROUTES.has(r.name))) {
+      await renderPcList(r);
+      if (r.name === "threads" || r.name === "inbox") return renderPcEmpty();
+    } else if (r.name === "threads") return renderThreads(r.acc);
+    else if (r.name === "inbox") return renderInbox();
     if (r.name === "schedule") return renderSchedule();
+    if (r.name === "contacts") return renderContacts(r);
+    if (r.name === "newgroup") return renderNewGroup(r);
     if (r.name === "share") return renderShare(r);
     if (r.name === "stats") return renderStats(r);
     if (r.name === "customer") return renderCustomer(r);
@@ -257,6 +270,7 @@ function searchRow(m, showAcc) {
       <div class="sub">${esc(m.isSelf ? "Bạn" : m.fromName || "")}: ${esc(emoticons(hitText(m)))}</div></div>
     <div class="meta"><div class="time">${timeLabel(m.ts)}</div></div></a></li>`;
 }
+const rerenderAll = () => { state.pcListKey = null; return render(); };
 // Giữ lâu / chuột phải vào một hội thoại: ghim, tắt thông báo
 function bindThreadMenu(list, findThread) {
   const open = (row) => {
@@ -264,8 +278,8 @@ function bindThreadMenu(list, findThread) {
     const t = findThread(acc, type, tid); if (!t) return;
     const path = `accounts/${acc}/threads/${type}/${encodeURIComponent(tid)}`;
     sheet([
-      [t.pinned ? "📌 Bỏ ghim" : "📌 Ghim lên đầu", () => api("POST", `${path}/pin`, { pinned: !t.pinned }).then(render)],
-      [t.muted ? "🔔 Bật thông báo" : "🔕 Tắt thông báo", () => api("POST", `${path}/mute`, { muted: !t.muted }).then(render)],
+      [t.pinned ? "📌 Bỏ ghim" : "📌 Ghim lên đầu", () => api("POST", `${path}/pin`, { pinned: !t.pinned }).then(rerenderAll)],
+      [t.muted ? "🔔 Bật thông báo" : "🔕 Tắt thông báo", () => api("POST", `${path}/mute`, { muted: !t.muted }).then(rerenderAll)],
       ["🖼 Ảnh, file, link", () => go(`#/a/${acc}/${type}/${encodeURIComponent(tid)}/media`)],
     ]);
   };
@@ -291,9 +305,9 @@ async function renderThreads(accId, q = state.q || "") {
   ]);
   state.threads = threads; state.threadsAcc = accId;
   const keepFocus = document.activeElement?.id === "q";
-  $app.innerHTML = `
-  ${header(esc(acc.name), { back: "#/", right: `<a class="icon-btn" href="#/settings" aria-label="Cài đặt">⚙︎</a><button class="icon-btn" id="menu" aria-label="Tuỳ chọn">⋯</button>` })}
-  ${accountSwitcher(accId)}
+  listRoot().innerHTML = `
+  ${header(esc(acc.name), { back: "#/", right: `<a class="icon-btn" href="#/a/${accId}/contacts" aria-label="Danh bạ" title="Danh bạ">📇</a><button class="icon-btn" id="menu" aria-label="Tuỳ chọn">⋯</button>` })}
+  ${state.pc ? "" : accountSwitcher(accId)}
   ${acc.status !== "online" ? `<div class="warn">${esc(acc.statusMsg || statusText[acc.status])}
      ${["kicked", "offline", "reconnecting"].includes(acc.status) ? `<button class="btn sm" id="rc">Kết nối lại</button>` : ""}
      ${acc.status === "expired" ? `<button class="btn sm" id="reqr">Quét QR</button>` : ""}</div>` : ""}
@@ -320,6 +334,8 @@ async function renderThreads(accId, q = state.q || "") {
   const setNotify = (body, msg) => api("POST", `accounts/${accId}/notify`, body).then(() => { toast(msg); render(); });
   const owner = acc.access === "owner", canReply = acc.access !== "view";
   document.getElementById("menu").onclick = () => sheet([
+    ["📇 Danh bạ", () => go(`#/a/${accId}/contacts`)],
+    canReply && ["👥 Tạo nhóm mới", () => go(`#/a/${accId}/newgroup`)],
     ["👤 Thông tin tài khoản", () => go(`#/a/${accId}/me`)],
     ["📊 Thống kê", () => go(`#/a/${accId}/stats`)],
     owner && ["👥 Giao cho nhân viên", () => go(`#/a/${accId}/share`)],
@@ -327,7 +343,7 @@ async function renderThreads(accId, q = state.q || "") {
       () => setNotify({ notify: !acc.notify }, acc.notify ? "Đã tắt thông báo của tài khoản" : "Đã bật thông báo của tài khoản")],
     owner && [acc.notifyGroups ? "🔕 Tắt thông báo tin nhóm" : "🔔 Bật thông báo tin nhóm",
       () => setNotify({ notifyGroups: !acc.notifyGroups }, acc.notifyGroups ? "Đã tắt thông báo tin nhóm" : "Đã bật thông báo tin nhóm")],
-    ["✓ Đánh dấu tất cả đã đọc", () => api("POST", `accounts/${accId}/read-all`).then(render)],
+    ["✓ Đánh dấu tất cả đã đọc", () => api("POST", `accounts/${accId}/read-all`).then(rerenderAll)],
     canReply && ["Tải danh bạ & nhóm", sync],
     canReply && ["Kết nối lại", () => api("POST", `accounts/${accId}/reconnect`).then(() => toast("Đang kết nối lại…"))],
     owner && ["Quét lại mã QR", startQr],
@@ -354,7 +370,7 @@ async function renderInbox(q = state.iq || "") {
   const list = nq ? threads.filter((t) => unaccentJs(t.name).includes(nq)) : threads;
   state.inbox = threads;
   const keepFocus = document.activeElement?.id === "iq";
-  $app.innerHTML = `
+  listRoot().innerHTML = `
   ${header("Hộp thư chung", { back: "#/", right: `<a class="icon-btn" href="#/settings" aria-label="Cài đặt">⚙︎</a>` })}
   <div class="search"><input id="iq" type="search" placeholder="Tìm trong mọi tài khoản" value="${esc(q)}"></div>
   ${q ? "" : filterBar(f, state.labels)}
@@ -464,7 +480,7 @@ async function renderChat(r) {
     const el = document.querySelector(`.msg[data-mid="${CSS.escape(r.around)}"]`);
     el?.scrollIntoView({ block: "center" }); el?.classList.add("hl");
   } else scrollBottom();
-  loadAccounts().catch(() => {}); // cập nhật số trên icon app sau khi đọc
+  if (state.pc) refreshPcList(); else loadAccounts().catch(() => {}); // cập nhật số trên icon app (và danh sách bên trái ở máy tính) sau khi đọc
   navigator.serviceWorker?.ready.then((reg) => reg.getNotifications({ tag: `${r.acc}-${r.type}-${r.tid}` }))
     .then((ns) => ns?.forEach((n) => n.close())).catch(() => {});
   const muteToggle = async () => {
@@ -1077,13 +1093,20 @@ async function renderProfile(r) {
       ${avatar(p.avatar, p.name, "lg")}
       <h2>${esc(p.name)}</h2>
       ${p.status ? `<p class="bio">${esc(p.status)}</p>` : ""}
-      ${!r.own ? `<div class="pad"><a class="btn primary" href="#/a/${r.acc}/0/${encodeURIComponent(p.uid)}">💬 Nhắn tin</a></div>` : ""}
+      ${!r.own ? `<div class="pad"><button class="btn primary" id="pchat">💬 Nhắn tin</button>${!p.isFriend && acc.access !== "view" ? `<button class="btn" id="padd">➕ Kết bạn</button>` : ""}</div>` : ""}
     </div>
     <section class="card mx"><h3>Thông tin</h3>
       ${rows.length ? `<dl class="info">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>` : `<p class="muted small">Người này ẩn thông tin cá nhân.</p>`}
     </section>
     <p class="muted small pad">Nhật ký (tường) chưa xem được: Zalo không mở chức năng này cho Zalo Web.</p>
   </main>`;
+  document.getElementById("pchat")?.addEventListener("click", () => openChatWith(r.acc, p));
+  document.getElementById("padd")?.addEventListener("click", async () => {
+    const message = prompt("Lời chào kèm lời mời kết bạn:", `Xin chào, mình là ${acc.name}. Kết bạn với mình nhé!`);
+    if (message === null) return;
+    try { await api("POST", `accounts/${r.acc}/friends/${p.uid}/request`, { message }); toast("Đã gửi lời mời kết bạn"); document.getElementById("padd").remove(); }
+    catch (e) { toast(e.message); }
+  });
 }
 
 async function renderGroupInfo(r) {
@@ -1095,23 +1118,83 @@ async function renderGroupInfo(r) {
   try { g = await api("GET", `accounts/${r.acc}/groups/${encodeURIComponent(r.tid)}`); }
   catch (e) { $app.querySelector("main").innerHTML = `<p class="center muted pad">${esc(e.message)}</p>`; return; }
   const t = state.threads.find((x) => x.threadId === r.tid && x.type === 1) || {};
+  const canReply = acc.access !== "view", owner = acc.access === "owner";
+  const isOwner = g.myRole === "owner", isAdmin = isOwner || g.myRole === "deputy";
+  const gp = `accounts/${r.acc}/groups/${encodeURIComponent(r.tid)}`;
+  const act = async (action, body, msg, after) => {
+    try { const x = await api("POST", `${gp}/${action}`, body || {}); if (msg) toast(msg); state.pcListKey = null; state.threads = []; after ? after(x) : renderGroupInfo(r); return x; }
+    catch (e) { toast(e.message); }
+  };
   $app.innerHTML = `
   ${header("Thông tin nhóm", { back })}
   <main class="scroll">
     <div class="profile">${avatar(g.avatar, g.name, "lg")}<h2>${esc(g.name)}</h2>
       ${g.desc ? `<p class="bio">${esc(g.desc)}</p>` : ""}
-      <p class="muted small">${g.total || g.members.length} thành viên${g.created ? " · tạo " + new Date(g.created).toLocaleDateString("vi-VN") : ""}</p>
-      <div class="pad"><button class="btn" id="gm">${t.muted ? "🔔 Bật thông báo" : "🔕 Tắt thông báo"}</button></div>
+      <p class="muted small">${g.total || g.members.length} thành viên${g.created ? " · tạo " + new Date(g.created).toLocaleDateString("vi-VN") : ""}${g.myRole ? ` · bạn là ${isOwner ? "trưởng nhóm" : "phó nhóm"}` : ""}</p>
+      <div class="pad flexrow wrap center-row">
+        <button class="btn" id="gm">${t.muted ? "🔔 Bật thông báo" : "🔕 Tắt thông báo"}</button>
+        ${canReply ? `<button class="btn" id="gren">✏️ Đổi tên</button><label class="btn filebtn">🖼 Đổi ảnh<input type="file" id="gavf" accept="image/*" hidden></label>
+          <button class="btn" id="gaddm">➕ Thêm thành viên</button>` : ""}
+      </div>
     </div>
-    <section class="card mx"><h3>Thành viên${g.members.length < g.total ? ` (hiện ${g.members.length})` : ""}</h3>
-      <ul class="list">${g.members.map((m) => `<li><a class="row" href="#/a/${r.acc}/u/${encodeURIComponent(m.uid)}">${avatar(m.avatar, m.name, "sm")}
-        <div class="grow"><div class="name">${esc(m.name || m.uid)}</div>${m.role ? `<div class="sub small">${esc(m.role)}</div>` : ""}</div></a></li>`).join("")}</ul>
+    ${canReply ? `<section class="card mx"><h3>Link mời vào nhóm</h3><div id="glink" class="small muted">Đang tải…</div></section>` : ""}
+    <section class="card mx"><h3>Thành viên${g.members.length < g.total ? ` (hiện ${g.members.length}/${g.total})` : ` (${g.members.length})`}</h3>
+      <ul class="list" id="gmem">${g.members.map((m) => `<li><button class="row rowbtn" data-uid="${esc(m.uid)}">${avatar(m.avatar, m.name, "sm")}
+        <div class="grow"><div class="name">${esc(m.name || m.uid)}${m.uid === g.me ? " (bạn)" : ""}</div>${m.role ? `<div class="sub small">${esc(m.role)}</div>` : ""}</div></button></li>`).join("")}</ul>
     </section>
+    ${owner ? `<div class="pad"><button class="btn danger block" id="gleave">🚪 Rời nhóm</button>
+      ${isOwner ? `<button class="btn danger block" id="gdisp">💥 Giải tán nhóm</button>` : ""}</div>` : ""}
   </main>`;
   document.getElementById("gm").onclick = async () => {
     await api("POST", `accounts/${r.acc}/threads/1/${encodeURIComponent(r.tid)}/mute`, { muted: !t.muted });
     state.threads = []; toast(t.muted ? "Đã bật thông báo" : "Đã tắt thông báo"); go(back);
   };
+  if (canReply) {
+    document.getElementById("gren").onclick = () => {
+      const name = prompt("Tên nhóm mới:", g.name); if (name && name.trim() && name !== g.name) act("rename", { name }, "Đã đổi tên nhóm");
+    };
+    document.getElementById("gavf").onchange = async (e) => {
+      const f = e.target.files[0]; if (!f) return;
+      try { act("avatar", { avatar: await prepareImage(f) }, "Đã đổi ảnh nhóm"); } catch (er) { toast(er.message); }
+    };
+    document.getElementById("gaddm").onclick = async () => {
+      try {
+        const picked = await pickFriends(r.acc, { title: "Thêm vào nhóm", exclude: g.members.map((m) => m.uid), button: "Thêm" });
+        if (picked?.length) act("add", { members: picked }, null, (x) => { toast(x.failed ? `Đã thêm, ${x.failed} người không thêm được (có thể đang chờ duyệt)` : "Đã thêm thành viên"); renderGroupInfo(r); });
+      } catch (er) { toast(er.message); }
+    };
+    const box = document.getElementById("glink");
+    const drawLink = (link) => {
+      box.innerHTML = link ? `<div class="flexrow"><input readonly value="${esc(link)}" id="glinkv"><button class="btn sm" id="gcopy">Chép</button></div>
+        ${isAdmin ? `<button class="link small" id="goff">Tắt link mời</button>` : ""}`
+        : `<p class="muted small">Link mời đang tắt.</p>${isAdmin ? `<button class="btn sm" id="gon">Bật link mời</button>` : ""}`;
+      document.getElementById("gcopy")?.addEventListener("click", () => navigator.clipboard.writeText(link).then(() => toast("Đã chép link")));
+      document.getElementById("gon")?.addEventListener("click", () => act("link-on", null, "Đã bật link mời", (x) => drawLink(x.link)));
+      document.getElementById("goff")?.addEventListener("click", () => act("link-off", null, "Đã tắt link mời", () => drawLink(null)));
+    };
+    api("GET", `${gp}/link`).then((x) => drawLink(x.link)).catch(() => { box.textContent = "Không lấy được link mời."; });
+  }
+  document.getElementById("gmem").onclick = (e) => {
+    const b = e.target.closest("[data-uid]"); if (!b) return;
+    const m = g.members.find((x) => x.uid === b.dataset.uid); if (!m) return;
+    const self = m.uid === g.me;
+    sheet([
+      ["👤 Trang cá nhân", () => go(`#/a/${r.acc}/u/${encodeURIComponent(m.uid)}`)],
+      !self && ["💬 Nhắn riêng", () => openChatWith(r.acc, m)],
+      canReply && isOwner && !self && m.roleKey === "" && ["⭐ Bổ nhiệm phó nhóm", () => act("deputy", { members: [m.uid] }, "Đã bổ nhiệm phó nhóm")],
+      canReply && isOwner && m.roleKey === "deputy" && ["Bỏ quyền phó nhóm", () => act("undeputy", { members: [m.uid] }, "Đã bỏ quyền phó nhóm")],
+      canReply && isAdmin && !self && m.roleKey !== "owner" && !(m.roleKey === "deputy" && !isOwner) &&
+        ["Xoá khỏi nhóm", () => confirm(`Xoá ${m.name} khỏi nhóm?`) && act("remove", { members: [m.uid] }, "Đã xoá khỏi nhóm"), "danger"],
+    ]);
+  };
+  document.getElementById("gleave")?.addEventListener("click", () => {
+    if (!confirm(isOwner ? "Bạn là trưởng nhóm. Rời nhóm thì Zalo sẽ chuyển quyền trưởng nhóm cho người khác. Tiếp tục?" : `Rời nhóm “${g.name}”?`)) return;
+    act("leave", null, "Đã rời nhóm", () => go(`#/a/${r.acc}`));
+  });
+  document.getElementById("gdisp")?.addEventListener("click", () => {
+    if (prompt(`Giải tán nhóm sẽ xoá nhóm với MỌI thành viên và không khôi phục được.\nGõ GIẢI TÁN để xác nhận:`) !== "GIẢI TÁN") return;
+    act("disperse", null, "Đã giải tán nhóm", () => go(`#/a/${r.acc}`));
+  });
 }
 
 // Thu nhỏ ảnh (tối đa 2560px, JPEG) trước khi gửi để nhanh hơn
@@ -1125,6 +1208,337 @@ async function prepareImage(file) {
   const blob = await new Promise((res) => c.toBlob(res, "image/jpeg", 0.85));
   const b64 = await new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(fr.result.split(",")[1]); fr.readAsDataURL(blob); });
   return { data: b64, filename: "photo.jpg", width: w, height: h };
+}
+
+// ---------- bố cục máy tính (kiểu Zalo PC) ----------
+function setPc(on) {
+  if (!on) {
+    if (state.pc) { state.pc = false; state.pcListKey = null; ROOT.classList.remove("pcmode"); ROOT.innerHTML = ""; }
+    $app = ROOT; return false;
+  }
+  if (!state.pc || !document.getElementById("pcMain")) {
+    ROOT.classList.add("pcmode");
+    ROOT.innerHTML = `<div class="pc"><nav class="pc-rail" id="pcRail" aria-label="Tài khoản"></nav>
+      <section class="pc-list" id="pcList"></section><section class="pc-main" id="pcMain"></section></div>`;
+    state.pcListKey = null;
+  }
+  state.pc = true; $app = document.getElementById("pcMain");
+  return true;
+}
+function renderRail() {
+  const rail = document.getElementById("pcRail"); if (!rail) return;
+  const r = state.route || {};
+  const cur = state.pcInbox ? "inbox" : state.pcAcc;
+  const total = state.accounts.reduce((s, a) => s + (a.unread || 0), 0);
+  rail.innerHTML = `
+    <a href="#/inbox" class="${cur === "inbox" ? "on" : ""}" title="Hộp thư chung">📥${total ? `<span class="ab">${total > 99 ? "99+" : total}</span>` : ""}</a>
+    <div class="rail-sep"></div>
+    ${state.accounts.map((a) => `<a href="#/a/${a.id}" class="acc ${cur === a.id ? "on" : ""} st-${a.status}" title="${esc(a.name)} – ${esc(statusText[a.status] || a.status)}">
+      ${avBadge(a.avatar, a.name, a.unread, "sm", !a.notify)}${a.status !== "online" ? `<span class="rail-warn">!</span>` : ""}</a>`).join("")}
+    <div class="rail-sep"></div>
+    ${state.pcAcc ? `<a href="#/a/${state.pcAcc}/contacts" class="${r.name === "contacts" ? "on" : ""}" title="Danh bạ">📇</a>` : ""}
+    <a href="#/schedule" title="Lịch hẹn & nhắc việc">⏰</a>
+    <span class="grow"></span>
+    <a href="#/" title="Danh sách tài khoản, thêm tài khoản">🏠</a>
+    <a href="#/settings" title="Cài đặt">⚙︎</a>`;
+}
+async function renderPcList(r) {
+  if (r.name === "inbox") state.pcInbox = true;
+  else if (r.acc) { if (r.name === "threads" || state.pcAcc !== r.acc) state.pcInbox = false; state.pcAcc = r.acc; }
+  if (!state.pcInbox && !state.accounts.some((a) => a.id === state.pcAcc)) state.pcAcc = state.accounts[0]?.id;
+  renderRail();
+  const key = state.pcInbox ? "inbox" : `a${state.pcAcc}`;
+  if (state.pcListKey !== key || r.name === "threads" || r.name === "inbox") {
+    state.pcListKey = key;
+    if (state.pcInbox) await renderInbox(); else if (state.pcAcc) await renderThreads(state.pcAcc);
+  }
+  markActive();
+}
+function markActive() {
+  const r = state.route || {};
+  document.querySelectorAll("#pcList .row[data-tid]").forEach((el) => el.classList.toggle("on",
+    Number(el.dataset.acc) === r.acc && Number(el.dataset.type) === r.type && el.dataset.tid === r.tid));
+}
+function refreshPcList() {
+  clearTimeout(refreshPcList.t);
+  refreshPcList.t = setTimeout(async () => {
+    if (!state.pc) return;
+    try {
+      await loadAccounts(); renderRail();
+      if (document.activeElement?.matches?.("#pcList input")) return; // đang gõ tìm kiếm ở danh sách: không vẽ lại
+      const top = document.querySelector("#pcList .scroll")?.scrollTop || 0;
+      if (state.pcInbox) await renderInbox(); else if (state.pcAcc) await renderThreads(state.pcAcc);
+      const sc = document.querySelector("#pcList .scroll"); if (sc) sc.scrollTop = top; // giữ vị trí cuộn
+      markActive();
+    } catch {}
+  }, 400);
+}
+function renderPcEmpty() {
+  const acc = state.accounts.find((a) => a.id === state.pcAcc);
+  $app.innerHTML = `<div class="pc-empty">
+    <div class="big-ico">💬</div>
+    <h2>Zalo Multi</h2>
+    <p class="muted">Chọn một hội thoại ở cột bên trái để bắt đầu.<br>Đổi tài khoản Zalo ở cột ngoài cùng.</p>
+    ${acc ? `<div class="pad"><a class="btn" href="#/a/${acc.id}/contacts">📇 Danh bạ</a>${acc.access !== "view" ? `<a class="btn" href="#/a/${acc.id}/newgroup">👥 Tạo nhóm</a>` : ""}</div>` : ""}
+    <p class="muted small">Mẹo: Enter để gửi, Shift+Enter xuống dòng · chuột phải vào hội thoại để ghim / tắt thông báo.</p>
+  </div>`;
+}
+
+// ---------- danh bạ ----------
+const CTABS = [["friends", "Bạn bè"], ["groups", "Nhóm"], ["requests", "Lời mời"], ["find", "Tìm số"]];
+const accBack = (accId) => (state.pc ? "" : `#/a/${accId}`);
+async function renderContacts(r, tab = state.ctab || "friends") {
+  const acc = state.accounts.find((a) => a.id === r.acc);
+  if (!acc) return go("#/");
+  state.ctab = tab;
+  const canReply = acc.access !== "view", owner = acc.access === "owner";
+  $app.innerHTML = `
+  ${header(`📇 Danh bạ · ${esc(acc.name)}`, { back: accBack(r.acc), right: canReply ? `<a class="icon-btn" href="#/a/${r.acc}/newgroup" title="Tạo nhóm" aria-label="Tạo nhóm">👥＋</a>` : "" })}
+  <div class="tabs">${CTABS.map(([k, n]) => `<button data-ct="${k}" class="${tab === k ? "on" : ""}">${n}</button>`).join("")}</div>
+  <main class="scroll" id="cbody"><div class="center"><div class="spinner"></div></div></main>`;
+  document.querySelectorAll("[data-ct]").forEach((b) => b.onclick = () => renderContacts(r, b.dataset.ct));
+  const body = document.getElementById("cbody");
+  if (acc.status !== "online") { body.innerHTML = `<p class="center muted">Tài khoản Zalo chưa kết nối (${esc(statusText[acc.status] || acc.status)}).<br>Danh bạ lấy trực tiếp từ Zalo nên cần kết nối trước.</p>`; return; }
+  try {
+    if (tab === "friends") await contactsFriends(body, acc, { canReply, owner });
+    if (tab === "groups") await contactsGroups(body, acc, { canReply });
+    if (tab === "requests") await contactsRequests(body, acc, { canReply });
+    if (tab === "find") contactsFind(body, acc, { canReply });
+  } catch (e) { body.innerHTML = `<p class="center muted">${esc(e.message)}</p>`; }
+}
+// mở chat với một người (kể cả chưa kết bạn)
+async function openChatWith(accId, u) {
+  await api("POST", `accounts/${accId}/open-chat`, { uid: u.uid, name: u.name, avatar: u.avatar });
+  state.threads = []; state.pcListKey = null;
+  go(chatHash(accId, 0, u.uid));
+}
+const firstLetter = (n) => { const c = unaccentJs(n).charAt(0).toUpperCase(); return /[A-Z]/.test(c) ? c : "#"; };
+async function contactsFriends(body, acc, { canReply, owner }, refresh) {
+  const { friends } = await api("GET", `accounts/${acc.id}/friends${refresh ? "?refresh=1" : ""}`);
+  const draw = (q = "") => {
+    const nq = unaccentJs(q.trim());
+    const list = nq ? friends.filter((f) => unaccentJs(`${f.name} ${f.zaloName} ${f.phone}`).includes(nq)) : friends;
+    let last = "";
+    document.getElementById("flist").innerHTML = list.map((f) => {
+      const L = firstLetter(f.name), sec = L !== last ? `<li class="sec">${L}</li>` : ""; last = L;
+      return `${sec}<li><button class="row rowbtn" data-uid="${esc(f.uid)}">${avatar(f.avatar, f.name, "sm")}
+        <div class="grow"><div class="name">${esc(f.name)}${f.blocked ? " 🚫" : ""}</div>${f.alias && f.zaloName ? `<div class="sub small">${esc(f.zaloName)}</div>` : ""}</div>
+        ${f.online ? `<span class="dot-on" title="Đang hoạt động"></span>` : ""}</button></li>`;
+    }).join("") || `<li class="center muted">${q ? "Không tìm thấy" : "Chưa có bạn bè"}</li>`;
+  };
+  body.innerHTML = `<div class="search"><input id="fq" type="search" placeholder="Tìm trong ${friends.length} bạn bè (tên, số điện thoại)"></div>
+    <div class="pad small muted flexrow"><span class="grow">${friends.length} bạn bè</span><button class="link" id="frefresh">↻ Tải lại từ Zalo</button></div>
+    <ul class="list" id="flist"></ul>`;
+  draw();
+  const fq = document.getElementById("fq");
+  fq.oninput = () => draw(fq.value);
+  document.getElementById("frefresh").onclick = () => contactsFriends(body, acc, { canReply, owner }, true).then(() => toast("Đã tải lại danh bạ")).catch((e) => toast(e.message));
+  document.getElementById("flist").onclick = (e) => {
+    const b = e.target.closest("[data-uid]"); if (!b) return;
+    const f = friends.find((x) => x.uid === b.dataset.uid); if (!f) return;
+    const act = (a, extra, msg) => api("POST", `accounts/${acc.id}/friends/${f.uid}/${a}`, extra || {}).then(() => { toast(msg); contactsFriends(body, acc, { canReply, owner }, true); }).catch((er) => toast(er.message));
+    sheet([
+      ["💬 Nhắn tin", () => openChatWith(acc.id, f)],
+      ["👤 Trang cá nhân", () => go(`#/a/${acc.id}/u/${encodeURIComponent(f.uid)}`)],
+      canReply && ["✏️ Đặt tên gợi nhớ", () => {
+        const alias = prompt(`Tên gợi nhớ cho ${f.zaloName || f.name} (để trống để xoá):`, f.alias);
+        if (alias !== null) act("alias", { alias }, alias.trim() ? "Đã đặt tên gợi nhớ" : "Đã xoá tên gợi nhớ");
+      }],
+      owner && (f.blocked ? ["Bỏ chặn", () => act("unblock", null, "Đã bỏ chặn")]
+        : ["🚫 Chặn tin nhắn", () => confirm(`Chặn ${f.name}? Người này sẽ không nhắn tin cho bạn được.`) && act("block", null, "Đã chặn")]),
+      owner && ["Xoá bạn", () => confirm(`Xoá ${f.name} khỏi danh sách bạn bè trên Zalo?`) && act("remove", null, "Đã xoá bạn"), "danger"],
+    ]);
+  };
+}
+async function contactsGroups(body, acc, { canReply }) {
+  const { threads } = await api("GET", `accounts/${acc.id}/threads?f=group`);
+  body.innerHTML = `${canReply ? `<div class="pad"><a class="btn primary block" href="#/a/${acc.id}/newgroup">👥 Tạo nhóm mới</a></div>` : ""}
+    <div class="search"><input id="gq" type="search" placeholder="Tìm nhóm"></div>
+    <ul class="list" id="glist"></ul>
+    <p class="center"><button class="link" id="gsync">↻ Tải danh sách nhóm từ Zalo</button></p>`;
+  const draw = (q = "") => {
+    const nq = unaccentJs(q.trim());
+    const list = threads.filter((t) => !nq || unaccentJs(t.name).includes(nq)).sort((a, b) => String(a.name).localeCompare(String(b.name), "vi"));
+    document.getElementById("glist").innerHTML = list.map((t) => `<li class="row"><a class="rowlink grow" href="${chatHash(acc.id, 1, t.threadId)}">${avatar(t.avatar, t.name, "sm")}
+      <span class="grow name">${esc(t.name)}</span></a><a class="icon-btn small" title="Thông tin nhóm" href="#/a/${acc.id}/1/${encodeURIComponent(t.threadId)}/info">ℹ︎</a></li>`).join("")
+      || `<li class="center muted">Chưa có nhóm nào trong app. Bấm “Tải danh sách nhóm từ Zalo”.</li>`;
+  };
+  draw();
+  const gq = document.getElementById("gq"); gq.oninput = () => draw(gq.value);
+  document.getElementById("gsync").onclick = async () => {
+    toast("Đang tải…");
+    try { const x = await api("POST", `accounts/${acc.id}/sync`); toast(`Đã tải ${x.groups} nhóm`); state.pcListKey = null; contactsGroups(body, acc, { canReply }); }
+    catch (e) { toast(e.message); }
+  };
+}
+async function contactsRequests(body, acc, { canReply }) {
+  const { incoming, outgoing } = await api("GET", `accounts/${acc.id}/friend-requests`);
+  const when = (t) => (t ? new Date(t > 1e12 ? t : t * 1000).toLocaleDateString("vi-VN") : "");
+  const row = (u, btns) => `<li class="row">${avatar(u.avatar, u.name, "sm")}<div class="grow"><div class="name">${esc(u.name)}</div>
+    ${u.message ? `<div class="sub small">“${esc(u.message)}”</div>` : ""}<div class="sub small">${when(u.time)}</div></div>${canReply ? btns : ""}</li>`;
+  body.innerHTML = `<div class="sec">Lời mời đã nhận (${incoming.length})</div>
+    <ul class="list">${incoming.map((u) => row(u, `<button class="btn sm primary" data-a="accept" data-uid="${esc(u.uid)}">Đồng ý</button><button class="btn sm" data-a="reject" data-uid="${esc(u.uid)}">Từ chối</button>`)).join("") || `<li class="center muted small">Không có lời mời nào</li>`}</ul>
+    <div class="sec">Lời mời đã gửi (${outgoing.length})</div>
+    <ul class="list">${outgoing.map((u) => row(u, `<button class="btn sm" data-a="undo" data-uid="${esc(u.uid)}">Thu hồi</button>`)).join("") || `<li class="center muted small">Chưa gửi lời mời nào</li>`}</ul>`;
+  body.onclick = async (e) => {
+    const b = e.target.closest("[data-a]"); if (!b) return;
+    b.disabled = true;
+    try {
+      await api("POST", `accounts/${acc.id}/friends/${b.dataset.uid}/${b.dataset.a}`, {});
+      toast({ accept: "Đã kết bạn", reject: "Đã từ chối", undo: "Đã thu hồi lời mời" }[b.dataset.a]);
+      contactsRequests(body, acc, { canReply });
+    } catch (er) { toast(er.message); b.disabled = false; }
+  };
+}
+function contactsFind(body, acc, { canReply }) {
+  body.onclick = null;
+  body.innerHTML = `<section class="card mx"><h3>Tìm theo số điện thoại</h3>
+      <form id="ff" class="flexrow"><input id="fphone" type="tel" inputmode="tel" placeholder="Ví dụ 0912 345 678" autocomplete="off"><button class="btn primary">Tìm</button></form>
+      <div id="fres"></div></section>
+    <section class="card mx"><h3>Kiểm tra nhiều số</h3>
+      <p class="muted small">Dán danh sách số (mỗi dòng một số) hoặc chọn file Excel đã lưu dạng CSV / TXT. App chỉ tra xem số nào có Zalo, <b>không tự gửi kết bạn</b> (gửi hàng loạt dễ bị Zalo khoá). Tối đa 200 số mỗi lần.</p>
+      <textarea id="mphones" rows="5" placeholder="0912345678&#10;0987654321"></textarea>
+      <div class="flexrow"><label class="btn sm filebtn">📄 Chọn file CSV/TXT<input type="file" id="mfile" accept=".csv,.txt,text/csv,text/plain" hidden></label>
+        <span class="grow"></span><button class="btn primary" id="mcheck">Kiểm tra</button></div>
+      <div id="mres"></div></section>`;
+  const res = document.getElementById("fres");
+  document.getElementById("ff").onsubmit = async (e) => {
+    e.preventDefault();
+    const phone = document.getElementById("fphone").value;
+    res.innerHTML = `<div class="center"><div class="spinner"></div></div>`;
+    try {
+      const u = await api("GET", `accounts/${acc.id}/find?phone=${encodeURIComponent(phone)}`);
+      res.innerHTML = `<div class="row found">${avatar(u.avatar, u.name)}<div class="grow"><div class="name">${esc(u.name)}</div>
+        <div class="sub small">${esc(u.phone)} · ${u.isFriend ? "Đã là bạn bè" : u.requested ? "Đã gửi lời mời" : u.requesting ? "Người này đã gửi lời mời cho bạn" : "Chưa là bạn bè"}</div></div></div>
+        <div class="pad flexrow wrap">
+          <button class="btn primary" id="fchat">💬 Nhắn tin</button>
+          <a class="btn" href="#/a/${acc.id}/u/${encodeURIComponent(u.uid)}">👤 Trang cá nhân</a>
+          ${canReply && !u.isFriend && !u.requested ? (u.requesting ? `<button class="btn" id="facc">✓ Đồng ý kết bạn</button>` : `<button class="btn" id="fadd">➕ Kết bạn</button>`) : ""}
+        </div>`;
+      document.getElementById("fchat").onclick = () => openChatWith(acc.id, u);
+      document.getElementById("facc")?.addEventListener("click", () => api("POST", `accounts/${acc.id}/friends/${u.uid}/accept`, {}).then(() => toast("Đã kết bạn")).catch((er) => toast(er.message)));
+      document.getElementById("fadd")?.addEventListener("click", async () => {
+        const message = prompt("Lời chào kèm lời mời kết bạn:", `Xin chào, mình là ${acc.name}. Kết bạn với mình nhé!`);
+        if (message === null) return;
+        try { await api("POST", `accounts/${acc.id}/friends/${u.uid}/request`, { message }); toast("Đã gửi lời mời kết bạn"); document.getElementById("fadd").remove(); }
+        catch (er) { toast(er.message); }
+      });
+    } catch (er) { res.innerHTML = `<p class="muted small">${esc(er.message)}</p>`; }
+  };
+  const ta = document.getElementById("mphones");
+  document.getElementById("mfile").onchange = async (e) => {
+    const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+    if (f.size > 2 * 1048576) return toast("File tối đa 2MB");
+    if (/\.xlsx?$/i.test(f.name)) return toast("Hãy lưu file Excel dạng CSV (File → Lưu thành → CSV) rồi chọn lại");
+    const nums = (await f.text()).match(/(?:\+?84|0)[\d .\-]{8,13}\d/g) || [];
+    ta.value = [...new Set(nums.map((n) => n.replace(/[ .\-]/g, "")))].join("\n");
+    toast(`Đọc được ${ta.value ? ta.value.split("\n").length : 0} số`);
+  };
+  document.getElementById("mcheck").onclick = async () => {
+    const out = document.getElementById("mres");
+    out.innerHTML = `<div class="center"><div class="spinner"></div><p class="muted small">Đang tra cứu, có thể mất vài chục giây…</p></div>`;
+    try {
+      const { results, invalid } = await api("POST", `accounts/${acc.id}/check-phones`, { phones: ta.value });
+      const has = results.filter((x) => x.uid);
+      out.innerHTML = `<p class="small"><b>${has.length}</b>/${results.length} số có Zalo${invalid.length ? ` · ${invalid.length} dòng không phải số hợp lệ` : ""}
+        ${results.length ? ` · <button class="link" id="mcsv">⬇️ Tải kết quả (CSV)</button>` : ""}</p>
+        <ul class="list">${results.map((x, i) => `<li class="row">${x.uid ? avatar(x.avatar, x.name, "sm") : `<span class="avatar sm ph">–</span>`}
+          <div class="grow"><div class="name small">${esc(x.phone)}${x.uid ? ` · ${esc(x.name)}` : ""}</div>
+          <div class="sub small">${x.uid ? (x.isFriend ? "Đã là bạn bè" : "Có Zalo") : "Không có Zalo / ẩn tìm kiếm"}</div></div>
+          ${x.uid ? `<button class="btn sm" data-mi="${i}">💬</button>` : ""}</li>`).join("")}</ul>`;
+      out.onclick = (e) => { const b = e.target.closest("[data-mi]"); if (b) openChatWith(acc.id, results[Number(b.dataset.mi)]); };
+      document.getElementById("mcsv")?.addEventListener("click", () => {
+        const q = (v) => `"${String(v ?? "").replace(/^([=+\-@])/, "'$1").replace(/"/g, '""')}"`;
+        const csv = "﻿" + [["Số điện thoại", "Có Zalo", "Tên Zalo", "Bạn bè"].map(q).join(","),
+          ...results.map((x) => [x.phone, x.uid ? "Có" : "Không", x.name || "", x.isFriend ? "Có" : ""].map(q).join(","))].join("\r\n");
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+        a.download = `kiem-tra-so-${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      });
+    } catch (er) { out.innerHTML = `<p class="muted small">${esc(er.message)}</p>`; }
+  };
+}
+
+// Chọn bạn bè (tạo nhóm, thêm thành viên)
+async function pickFriends(accId, { title, exclude = [], button = "Xong" } = {}) {
+  const { friends } = await api("GET", `accounts/${accId}/friends`);
+  const skip = new Set(exclude.map(String));
+  const list = friends.filter((f) => !skip.has(f.uid) && !f.blocked);
+  return new Promise((resolve) => {
+    const el = document.createElement("div");
+    el.className = "modal-bg";
+    el.innerHTML = `<div class="modal picker"><h2>${esc(title || "Chọn bạn bè")}</h2>
+      <input id="pq" type="search" placeholder="Tìm tên">
+      <div class="chips" id="psel"></div>
+      <ul class="list scroll" id="plist"></ul>
+      <div class="flexrow"><button class="btn" id="pcancel">Huỷ</button><span class="grow"></span><button class="btn primary" id="pok">${esc(button)}</button></div></div>`;
+    document.body.appendChild(el);
+    const sel = new Set();
+    const draw = () => {
+      const nq = unaccentJs(el.querySelector("#pq").value.trim());
+      el.querySelector("#plist").innerHTML = list.filter((f) => !nq || unaccentJs(`${f.name} ${f.phone}`).includes(nq)).slice(0, 300).map((f) =>
+        `<li><label class="row pick"><input type="checkbox" data-uid="${esc(f.uid)}" ${sel.has(f.uid) ? "checked" : ""}>${avatar(f.avatar, f.name, "sm")}<span class="grow name">${esc(f.name)}</span></label></li>`).join("")
+        || `<li class="center muted">Không có ai</li>`;
+      el.querySelector("#psel").innerHTML = [...sel].map((u) => `<button type="button" data-rm="${esc(u)}">${esc(list.find((f) => f.uid === u)?.name || u)} ✕</button>`).join("");
+      el.querySelector("#pok").textContent = `${button}${sel.size ? ` (${sel.size})` : ""}`;
+    };
+    draw();
+    el.querySelector("#pq").oninput = draw;
+    el.querySelector("#plist").onchange = (e) => { const u = e.target.dataset.uid; if (!u) return; e.target.checked ? sel.add(u) : sel.delete(u); draw(); };
+    el.querySelector("#psel").onclick = (e) => { const u = e.target.dataset.rm; if (u) { sel.delete(u); draw(); } };
+    const done = (v) => { el.remove(); resolve(v); };
+    el.querySelector("#pcancel").onclick = () => done(null);
+    el.querySelector("#pok").onclick = () => done([...sel]);
+  });
+}
+
+async function renderNewGroup(r) {
+  const acc = state.accounts.find((a) => a.id === r.acc);
+  if (!acc) return go("#/");
+  const ng = state.newGroup?.acc === r.acc ? state.newGroup : (state.newGroup = { acc: r.acc, members: [], names: {}, name: "", avatar: null });
+  $app.innerHTML = `
+  ${header("👥 Tạo nhóm mới", { back: "history" })}
+  <main class="scroll"><div class="pad">
+    <div class="flexrow">
+      <label class="avpick" title="Ảnh nhóm">${ng.avatar ? `<img class="avatar" src="data:image/jpeg;base64,${ng.avatar.data}" alt="">` : `<span class="avatar ph">📷</span>`}<input type="file" id="gav" accept="image/*" hidden></label>
+      <input id="gname" placeholder="Đặt tên nhóm" maxlength="100" value="${esc(ng.name)}">
+    </div>
+    <div class="sec">Thành viên (${ng.members.length})</div>
+    <ul class="list">${ng.members.map((u) => `<li class="row">${avatar(ng.names[u]?.avatar, ng.names[u]?.name, "sm")}<span class="grow name">${esc(ng.names[u]?.name || u)}</span><button class="link" data-rm="${esc(u)}">Bỏ</button></li>`).join("")}</ul>
+    <button class="btn block" id="gadd">＋ Chọn thành viên từ danh bạ</button>
+    <p class="muted small">Cần ít nhất 2 người (không tính bạn). Người chặn lời mời vào nhóm có thể không được thêm.</p>
+    <button class="btn primary block" id="gcreate" ${ng.members.length >= 2 && acc.status === "online" ? "" : "disabled"}>Tạo nhóm</button>
+    ${acc.status !== "online" ? `<p class="err">Tài khoản Zalo chưa kết nối.</p>` : ""}
+  </div></main>`;
+  const nameEl = document.getElementById("gname");
+  nameEl.oninput = () => { ng.name = nameEl.value; };
+  document.getElementById("gav").onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    try { ng.avatar = await prepareImage(f); renderNewGroup(r); } catch (er) { toast(er.message); }
+  };
+  document.getElementById("gadd").onclick = async () => {
+    try {
+      const { friends } = await api("GET", `accounts/${r.acc}/friends`);
+      const picked = await pickFriends(r.acc, { title: "Chọn thành viên", exclude: ng.members, button: "Thêm" });
+      if (!picked) return;
+      for (const u of picked) { const f = friends.find((x) => x.uid === u); ng.names[u] = { name: f?.name, avatar: f?.avatar }; ng.members.push(u); }
+      renderNewGroup(r);
+    } catch (er) { toast(er.message); }
+  };
+  $app.querySelector("main").addEventListener("click", (e) => {
+    const u = e.target.dataset?.rm; if (!u) return;
+    ng.members = ng.members.filter((x) => x !== u); renderNewGroup(r);
+  });
+  document.getElementById("gcreate").onclick = async (e) => {
+    e.target.disabled = true; e.target.textContent = "Đang tạo…";
+    try {
+      const x = await api("POST", `accounts/${r.acc}/groups`, { name: ng.name, members: ng.members, avatar: ng.avatar });
+      state.newGroup = null; state.threads = []; state.pcListKey = null;
+      toast(`Đã tạo nhóm${x.failed ? ` (${x.failed} người không thêm được)` : ""}`);
+      go(chatHash(r.acc, 1, x.groupId));
+    } catch (er) { toast(er.message); e.target.disabled = false; e.target.textContent = "Tạo nhóm"; }
+  };
 }
 
 // ---------- cài đặt ----------
@@ -1320,8 +1734,13 @@ const ACTIONS = {
   labels: "Gắn nhãn", note: "Thêm ghi chú", schedule: "Đặt lịch hẹn", schedule_cancel: "Huỷ lịch hẹn", export: "Xuất lịch sử chat",
   admin_user: "QT: đổi quyền/khoá người dùng", admin_reset_password: "QT: đặt lại mật khẩu", admin_reset_otp: "QT: tắt 2 lớp của người dùng",
   admin_delete_user: "QT: xoá người dùng", admin_settings: "QT: đổi cài đặt",
+  friend_request: "Gửi lời mời kết bạn", friend_accept: "Đồng ý kết bạn", friend_reject: "Từ chối kết bạn", friend_undo: "Thu hồi lời mời kết bạn",
+  friend_alias: "Đặt tên gợi nhớ", friend_remove: "Xoá bạn", friend_block: "Chặn người dùng", friend_unblock: "Bỏ chặn người dùng",
+  group_create: "Tạo nhóm", group_rename: "Đổi tên nhóm", group_avatar: "Đổi ảnh nhóm", group_add: "Thêm thành viên nhóm",
+  group_remove: "Xoá thành viên nhóm", group_deputy: "Bổ nhiệm phó nhóm", group_undeputy: "Bỏ phó nhóm",
+  "group_link-on": "Bật link mời nhóm", "group_link-off": "Tắt link mời nhóm", group_leave: "Rời nhóm", group_disperse: "Giải tán nhóm",
 };
-const ACTION_GROUPS = [["", "Tất cả"], ["login", "Đăng nhập"], ["login_fail", "Sai mật khẩu"], ["send_text", "Gửi tin"], ["zalo_kicked", "Zalo bị ngắt"], ["remove_account", "Xoá tài khoản"]];
+const ACTION_GROUPS = [["", "Tất cả"], ["login", "Đăng nhập"], ["login_fail", "Sai mật khẩu"], ["send_text", "Gửi tin"], ["zalo_kicked", "Zalo bị ngắt"], ["group_create", "Tạo nhóm"], ["friend_request", "Kết bạn"], ["remove_account", "Xoá tài khoản"]];
 async function renderActivity(more) {
   const f = state.actFilter || "";
   const before = more ? state.activity.at(-1)?.ts : null;
@@ -1507,20 +1926,22 @@ function startEvents() {
       document.getElementById("mlist")?.insertAdjacentHTML("beforeend", bubble(m, m.type));
       if (atBottom || m.isSelf) scrollBottom();
       api("GET", `accounts/${m.accountId}/threads/${m.type}/${encodeURIComponent(m.threadId)}/messages?before=1`).catch(() => {}); // đánh dấu đã đọc
-    } else if (r?.name === "threads" || r?.name === "home" || r?.name === "inbox") {
+    } else if (!state.pc && (r?.name === "threads" || r?.name === "home" || r?.name === "inbox")) {
       clearTimeout(startEvents.t); startEvents.t = setTimeout(render, 300);
     } else if (r?.name === "chat") {
       const a = state.accounts.find((x) => x.id === m.accountId); if (a && !m.isSelf) a.unread++;
     }
+    if (state.pc) refreshPcList();
     if (!m.isSelf && !(r?.name === "chat" && r.acc === m.accountId && r.tid === m.threadId)) setBadge((state.badge || 0) + 1);
   });
-  es.addEventListener("accounts", () => { if (state.route?.name !== "chat") render(); else loadAccounts().catch(() => {}); });
+  es.addEventListener("accounts", () => { if (state.pc) refreshPcList(); else if (state.route?.name !== "chat") render(); else loadAccounts().catch(() => {}); });
   es.addEventListener("schedule", () => { if (["schedule", "customer"].includes(state.route?.name)) render(); });
   es.addEventListener("account", (e) => {
     const d = JSON.parse(e.data);
     const a = state.accounts.find((x) => x.id === d.id);
     if (a) { a.status = d.status; a.statusMsg = d.statusMsg; }
-    if (state.route?.name !== "chat") { clearTimeout(startEvents.t); startEvents.t = setTimeout(render, 300); }
+    if (state.pc) refreshPcList();
+    if (state.route?.name !== "chat") { if (!state.pc) { clearTimeout(startEvents.t); startEvents.t = setTimeout(render, 300); } }
     else { const t = document.getElementById("txt"); if (t) t.disabled = d.status !== "online"; }
   });
   const inChat = (d) => state.route?.name === "chat" && state.route.acc === d.accountId && state.route.tid === d.threadId && state.route.type === d.type;
