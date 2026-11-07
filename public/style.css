@@ -244,3 +244,11 @@ select { font: inherit; color: var(--fg); background: var(--bg2); border: 1px so
 .legend .k { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
 .lbar { display: grid; grid-template-columns: minmax(80px, max-content) 1fr 36px; gap: 8px; align-items: center; margin: 6px 0; }
 .lbar meter { width: 100%; height: 12px; } .lbar b { text-align: right; }
+
+/* bảo mật 2 lớp, nhật ký */
+.otp-in { font-size: 22px; letter-spacing: .25em; text-align: center; font-variant-numeric: tabular-nums; }
+.codes { background: var(--bg2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; font-size: 16px; line-height: 1.7; user-select: all; }
+.steps { padding-left: 18px; } .steps li { margin: 6px 0; }
+.secret code { font-size: 15px; background: var(--bg2); padding: 3px 6px; border-radius: 6px; word-break: break-all; }
+.act .row { padding: 8px 16px; }
+.warn-row { background: color-mix(in srgb, var(--danger) 7%, transparent); }

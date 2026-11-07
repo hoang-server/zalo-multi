@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { db, now, getSetting } from "./db.js";
+import { db, now, getSetting, encrypt, decrypt } from "./db.js";
 import { BASE_PATH, SETUP_CODE } from "./config.js";
 
 const COOKIE = "zm_sid";
@@ -50,13 +50,14 @@ export function currentUser(req) {
   const token = parseCookies(req.headers.cookie)[COOKIE];
   if (!token) return null;
   const row = db.prepare(
-    `SELECT u.id, u.username, u.is_admin, u.prefs, u.last_seen FROM sessions s JOIN users u ON u.id = s.user_id
+    `SELECT u.id, u.username, u.is_admin, u.prefs, u.last_seen, u.totp_on FROM sessions s JOIN users u ON u.id = s.user_id
      WHERE s.token_hash = ? AND s.expires_at > ? AND u.disabled = 0`
   ).get(sha256(token), now());
   if (!row) return null;
   if (!row.last_seen || now() - row.last_seen > 300e3) db.prepare("UPDATE users SET last_seen = ? WHERE id = ?").run(now(), row.id);
-  const { prefs, last_seen, ...user } = row;
+  const { prefs, last_seen, totp_on, ...user } = row;
   user.prefs = { ...PREF_DEFAULTS, ...JSON.parse(prefs || "{}") };
+  user.otp = !!totp_on;
   return user;
 }
 
@@ -105,8 +106,91 @@ export function login(req, res, { username, password }, ip) {
   }
   if (u.disabled) throw httpError(403, "Tài khoản đã bị khoá. Liên hệ quản trị viên.");
   failures.delete(ip);
+  if (u.totp_on) {
+    // bật 2 lớp: chưa tạo phiên, chờ nhập mã OTP (vé có hạn 5 phút)
+    const ticket = crypto.randomBytes(24).toString("base64url");
+    otpTickets.set(ticket, { userId: u.id, exp: Date.now() + 300e3, tries: 0 });
+    return { otp: true, ticket, username: u.username };
+  }
   startSession(res, u.id);
   return { id: u.id, username: u.username, is_admin: u.is_admin };
+}
+
+// ---------- Đăng nhập 2 lớp (TOTP, tương thích Google Authenticator / Authy / Microsoft Authenticator) ----------
+const otpTickets = new Map();
+setInterval(() => { for (const [k, v] of otpTickets) if (v.exp < Date.now()) otpTickets.delete(k); }, 60e3).unref();
+const B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+const b32encode = (buf) => { let bits = "", out = ""; for (const b of buf) bits += b.toString(2).padStart(8, "0"); for (let i = 0; i + 5 <= bits.length; i += 5) out += B32[parseInt(bits.slice(i, i + 5), 2)]; return out; };
+const b32decode = (str) => { let bits = ""; for (const c of str.replace(/=+$/, "").toUpperCase()) { const v = B32.indexOf(c); if (v < 0) continue; bits += v.toString(2).padStart(5, "0"); } const out = []; for (let i = 0; i + 8 <= bits.length; i += 8) out.push(parseInt(bits.slice(i, i + 8), 2)); return Buffer.from(out); };
+function totp(secret, step) {
+  const buf = Buffer.alloc(8); buf.writeBigUInt64BE(BigInt(step));
+  const h = crypto.createHmac("sha1", b32decode(secret)).update(buf).digest();
+  const o = h[h.length - 1] & 15;
+  return String(((h.readUInt32BE(o) & 0x7fffffff) % 1e6)).padStart(6, "0");
+}
+// chấp nhận lệch ±30 giây; mỗi mã chỉ dùng được 1 lần
+function checkTotp(u, code) {
+  code = String(code || "").replace(/\s/g, "");
+  if (!/^\d{6}$/.test(code)) return false;
+  const secret = decrypt(u.totp_secret).s, cur = Math.floor(Date.now() / 30e3);
+  for (const step of [cur - 1, cur, cur + 1]) {
+    if (step <= (u.totp_last || 0)) continue;
+    const a = Buffer.from(totp(secret, step)), b = Buffer.from(code);
+    if (crypto.timingSafeEqual(a, b)) { db.prepare("UPDATE users SET totp_last = ? WHERE id = ?").run(step, u.id); return true; }
+  }
+  return false;
+}
+// mã dự phòng (dùng khi mất điện thoại): lưu dạng băm, dùng xong là xoá
+function useRecovery(u, code) {
+  const list = JSON.parse(u.totp_recovery || "[]");
+  const h = sha256(String(code || "").trim().toLowerCase().replace(/[^a-z0-9]/g, ""));
+  const i = list.indexOf(h);
+  if (i < 0) return false;
+  list.splice(i, 1);
+  db.prepare("UPDATE users SET totp_recovery = ? WHERE id = ?").run(JSON.stringify(list), u.id);
+  return true;
+}
+
+export function loginOtp(req, res, { ticket, code }, ip) {
+  if (tooManyFailures(ip)) throw httpError(429, "Sai quá nhiều lần, thử lại sau 15 phút");
+  const t = otpTickets.get(String(ticket || ""));
+  if (!t || t.exp < Date.now()) throw httpError(401, "Phiên đăng nhập đã hết hạn, nhập lại mật khẩu");
+  const u = db.prepare("SELECT * FROM users WHERE id = ?").get(t.userId);
+  if (!u || u.disabled) throw httpError(403, "Tài khoản đã bị khoá");
+  const ok = u.totp_on && (checkTotp(u, code) || (String(code || "").replace(/\s/g, "").length > 6 && useRecovery(u, code)));
+  if (!ok) {
+    recordFailure(ip);
+    if (++t.tries >= 5) otpTickets.delete(String(ticket));
+    throw httpError(401, "Mã xác thực không đúng");
+  }
+  otpTickets.delete(String(ticket));
+  failures.delete(ip);
+  startSession(res, u.id);
+  return { id: u.id, username: u.username, is_admin: u.is_admin };
+}
+
+export function otpSetup(user) {
+  const secret = b32encode(crypto.randomBytes(20));
+  db.prepare("UPDATE users SET totp_pending = ? WHERE id = ?").run(encrypt({ s: secret }), user.id);
+  const label = encodeURIComponent(`Zalo Multi:${user.username}`);
+  return { secret: secret.replace(/(.{4})/g, "$1 ").trim(), uri: `otpauth://totp/${label}?secret=${secret}&issuer=Zalo%20Multi` };
+}
+export function otpEnable(user, { code }) {
+  const u = db.prepare("SELECT * FROM users WHERE id = ?").get(user.id);
+  if (!u.totp_pending) throw httpError(400, "Hãy bấm Bật lại để lấy khoá mới");
+  if (!checkTotp({ ...u, totp_secret: u.totp_pending, totp_last: 0 }, code)) throw httpError(400, "Mã không đúng. Kiểm tra giờ trên điện thoại và nhập mã đang hiện.");
+  const recovery = Array.from({ length: 8 }, () => crypto.randomBytes(5).toString("hex"));
+  db.prepare("UPDATE users SET totp_secret = totp_pending, totp_pending = NULL, totp_on = 1, totp_recovery = ? WHERE id = ?")
+    .run(JSON.stringify(recovery.map((c) => sha256(c))), user.id);
+  return { recovery: recovery.map((c) => c.replace(/(.{5})/, "$1-")) };
+}
+export function otpDisable(user, { password }) {
+  const u = db.prepare("SELECT * FROM users WHERE id = ?").get(user.id);
+  if (!verifyPassword(String(password || ""), u.pass_hash)) throw httpError(401, "Mật khẩu không đúng");
+  resetOtp(user.id);
+}
+export function resetOtp(userId) {
+  db.prepare("UPDATE users SET totp_on = 0, totp_secret = NULL, totp_pending = NULL, totp_recovery = NULL WHERE id = ?").run(Number(userId));
 }
 
 export function logout(req, res) {
@@ -126,6 +210,7 @@ export function changePassword(user, { current, password }) {
 export const PREF_DEFAULTS = {
   push_preview: true,   // hiện nội dung tin trong thông báo
   app_badge: true,      // hiện số tin chưa đọc trên icon app
+  alert_push: true,     // thông báo khi tài khoản Zalo bị ngắt / hết phiên
 };
 export function setPrefs(user, patch) {
   const prefs = { ...user.prefs };

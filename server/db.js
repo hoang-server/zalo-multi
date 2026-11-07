@@ -90,6 +90,14 @@ function addColumn(table, def) {
 addColumn("users", "disabled INTEGER NOT NULL DEFAULT 0");
 addColumn("users", "prefs TEXT");                 // JSON: tuỳ chọn riêng của người dùng
 addColumn("users", "last_seen INTEGER");
+addColumn("users", "telegram_chat TEXT");                   // chat_id Telegram nhận cảnh báo
+addColumn("zalo_accounts", "alerted_status TEXT");          // đã cảnh báo trạng thái này (tránh báo lặp)
+addColumn("zalo_accounts", "alerted_at INTEGER");
+addColumn("users", "totp_on INTEGER NOT NULL DEFAULT 0");   // đăng nhập 2 lớp
+addColumn("users", "totp_secret TEXT");                     // khoá TOTP (mã hoá)
+addColumn("users", "totp_pending TEXT");                    // khoá đang chờ xác nhận khi bật
+addColumn("users", "totp_last INTEGER");                    // bước thời gian của mã đã dùng gần nhất (chống dùng lại)
+addColumn("users", "totp_recovery TEXT");                   // JSON: băm các mã dự phòng
 addColumn("zalo_accounts", "notify INTEGER NOT NULL DEFAULT 1");
 addColumn("zalo_accounts", "notify_groups INTEGER NOT NULL DEFAULT 1");
 addColumn("threads", "muted INTEGER NOT NULL DEFAULT 0");
@@ -176,6 +184,7 @@ export const SETTING_DEFAULTS = {
   media_store: true,         // tải ảnh/file/video/tin thoại về server
   media_max_mb: 50,          // bỏ qua file lớn hơn
   group_history: 100,        // số tin lấy từ lịch sử nhóm khi mở nhóm
+  telegram_bot_token: "",    // token bot Telegram (từ @BotFather) để gửi cảnh báo
 };
 export function getSetting(key) {
   const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key);

@@ -20,7 +20,7 @@ export function listUsers() {
     `SELECT u.id, u.username, u.is_admin isAdmin, u.disabled, u.created_at createdAt, u.last_seen lastSeen,
             (SELECT COUNT(*) FROM zalo_accounts a WHERE a.user_id = u.id) accounts,
             (SELECT COUNT(*) FROM zalo_accounts a WHERE a.user_id = u.id AND a.status = 'online') online,
-            (SELECT COUNT(*) FROM push_subs p WHERE p.user_id = u.id) devices
+            (SELECT COUNT(*) FROM push_subs p WHERE p.user_id = u.id) devices, u.totp_on otp
      FROM users u ORDER BY u.created_at`
   ).all();
 }
@@ -70,10 +70,20 @@ export function deleteInvite(code) {
   db.prepare("DELETE FROM invites WHERE code = ? AND used_by IS NULL").run(String(code));
 }
 
-export function getSettings() { return allSettings(); }
+// Khoá bí mật: không gửi giá trị thật về trình duyệt, chỉ báo đã đặt hay chưa
+const SECRET_KEYS = ["telegram_bot_token"];
+const MASK = "••••••••";
+export function getSettings() {
+  const s = allSettings();
+  for (const k of SECRET_KEYS) s[k] = s[k] ? MASK : "";
+  return s;
+}
 export function saveSettings(patch) {
-  for (const [k, v] of Object.entries(patch || {})) setSetting(k, v);
-  return allSettings();
+  for (const [k, v] of Object.entries(patch || {})) {
+    if (SECRET_KEYS.includes(k) && v === MASK) continue; // không đổi
+    setSetting(k, typeof v === "string" ? v.trim() : v);
+  }
+  return getSettings();
 }
 
 export function stats() {

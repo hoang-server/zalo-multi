@@ -4,6 +4,7 @@ import { db, encrypt, decrypt, now, getSetting, unaccent } from "./db.js";
 import { saveMedia, removeMediaOfAccount } from "./media.js";
 import { emit, pushToUser } from "./push.js";
 import { httpError } from "./auth.js";
+import { logActivity } from "./activity.js";
 import { emoticons } from "../public/emoticons.js";
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
@@ -192,8 +193,11 @@ export function unreadTotal(userId) {
   ).get().n;
 }
 
+// Hàm được gọi mỗi khi trạng thái tài khoản đổi (alerts.js đăng ký để gửi cảnh báo)
+export const statusHooks = [];
 function setStatus(accountId, userId, status, msg = null) {
   db.prepare("UPDATE zalo_accounts SET status = ?, status_msg = ? WHERE id = ?").run(status, msg, accountId);
+  for (const h of statusHooks) try { h(accountId, status); } catch (e) { console.error("hook trạng thái lỗi", e); }
   emitAcc(accountId, "account", { id: accountId, status, statusMsg: msg });
 }
 
@@ -343,6 +347,7 @@ export function startQrLogin(user, replaceAccountId = null) {
       ).run(user.id, uid, name, avatar, enc, now()).lastInsertRowid);
     }
     attach(id, user.id, api);
+    logActivity({ user, action: existing ? "reqr_account" : "add_account", accountId: id });
     finish("success", { account: { id, name, avatar } });
   }).catch((e) => finish("error", { message: e?.message || "Lỗi đăng nhập Zalo" }));
 

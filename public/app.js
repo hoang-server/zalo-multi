@@ -59,6 +59,7 @@ function parseRoute() {
   if (h[0] === "admin") return { name: "admin" };
   if (h[0] === "inbox") return { name: "inbox" };
   if (h[0] === "schedule") return { name: "schedule" };
+  if (h[0] === "activity") return { name: "activity" };
   if (h[0] === "a" && h[1] && (h[2] === "share" || h[2] === "stats")) return { name: h[2], acc: Number(h[1]) };
   if (h[0] === "a" && h[1] && h[3] && h[4] === "crm") return { name: "customer", acc: Number(h[1]), type: Number(h[2]), tid: decodeURIComponent(h[3]) };
   if (h[0] === "a" && h[1] && h[3] && h[4] === "media") return { name: "gallery", acc: Number(h[1]), type: Number(h[2]), tid: decodeURIComponent(h[3]) };
@@ -85,6 +86,7 @@ async function render() {
     if (r.name === "login") return renderLogin();
     if (r.name === "settings") return renderSettings();
     if (r.name === "admin") return renderAdmin();
+    if (r.name === "activity") return renderActivity();
     await Promise.all([loadAccounts(), loadLabels()]);
     if (r.name === "home") {
       // Chỉ tự mở thẳng tài khoản duy nhất khi vừa mở app; bấm ‹ quay lại thì ở lại màn hình chính
@@ -131,9 +133,39 @@ function renderLogin(mode = state.loginMode || "login") {
     e.preventDefault();
     const body = Object.fromEntries(new FormData(e.target));
     try {
-      const { user } = await api("POST", reg ? "register" : "login", body);
-      state.user = (await api("GET", "me")).user || user; state.firstUser = false; startEvents(); go("#/");
+      const r = await api("POST", reg ? "register" : "login", body);
+      if (r.otp) return renderOtpLogin(r.ticket);
+      await afterLogin(r.user);
     } catch (err) { document.getElementById("err").textContent = err.message; }
+  };
+}
+async function afterLogin(user) {
+  state.user = (await api("GET", "me")).user || user; state.firstUser = false; startEvents(); go("#/");
+}
+function renderOtpLogin(ticket) {
+  $app.innerHTML = `
+  <div class="auth">
+    <img src="icons/icon.svg" class="logo" alt="">
+    <h1>Xác thực 2 lớp</h1>
+    <p class="muted">Mở ứng dụng xác thực (Google Authenticator…) và nhập mã 6 số của Zalo Multi.</p>
+    <form id="of" class="card">
+      <label>Mã xác thực<input name="code" inputmode="numeric" autocomplete="one-time-code" autocapitalize="none" required maxlength="11" class="otp-in"></label>
+      <button class="btn primary" type="submit">Xác nhận</button>
+      <p class="err" id="err"></p>
+      <p class="muted small">Mất điện thoại? Nhập một <b>mã dự phòng</b> (dạng xxxxx-xxxxx) đã lưu khi bật 2 lớp.</p>
+    </form>
+    <button class="link" id="back">‹ Quay lại đăng nhập</button>
+  </div>`;
+  const f = document.getElementById("of");
+  f.querySelector("input").focus();
+  document.getElementById("back").onclick = () => renderLogin("login");
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    try { await afterLogin((await api("POST", "login/otp", { ticket, code: f.querySelector("input").value })).user); }
+    catch (err) {
+      document.getElementById("err").textContent = err.message;
+      if (/hết hạn/.test(err.message)) setTimeout(() => renderLogin("login"), 1500);
+    }
   };
 }
 
@@ -445,6 +477,10 @@ async function renderChat(r) {
     ["🗂 Hồ sơ khách: nhãn, ghi chú", () => go(crm)],
     ["⏰ Hẹn giờ gửi tin / nhắc việc", () => { state.crmFocus = "schedule"; go(crm); }],
     ["🔍 Tìm tin nhắn", () => { state.galleryTab = "search"; go(media); }],
+    ["⬇️ Xuất lịch sử chat", () => sheet([
+      ["📄 Trang HTML (xem, in ra PDF)", () => download(`${tpath(r)}/export?format=html`)],
+      ["📊 File Excel (CSV)", () => download(`${tpath(r)}/export?format=csv`)],
+    ])],
     ["🖼 Ảnh, file, link đã gửi", () => { state.galleryTab = "media"; go(media); }],
     !viewOnly && [t.pinned ? "📌 Bỏ ghim hội thoại" : "📌 Ghim hội thoại lên đầu", async () => {
       await api("POST", `${tpath(r)}/pin`, { pinned: !t.pinned }); t.pinned = t.pinned ? 0 : 1;
@@ -545,6 +581,14 @@ async function renderChat(r) {
   }, { passive: true });
   const cancel = () => { clearTimeout(press); press = null; };
   box.addEventListener("touchend", cancel); box.addEventListener("touchmove", cancel, { passive: true });
+}
+
+// tải file từ API (trình duyệt tự gửi cookie đăng nhập)
+function download(path) {
+  const a = document.createElement("a");
+  a.href = "api/" + path; a.download = ""; a.rel = "noopener";
+  document.body.appendChild(a); a.click(); a.remove();
+  toast("Đang tải xuống…");
 }
 
 // ---------- tin mẫu ----------
@@ -1115,6 +1159,13 @@ async function renderSettings() {
         <textarea name="text" rows="3" placeholder="Nội dung tin" maxlength="5000" required></textarea>
         <button class="btn primary" id="qsave">Thêm tin mẫu</button> <button type="button" class="btn" id="qnew" hidden>Huỷ sửa</button></form>
     </section>
+    <section class="card"><h3>🔐 Đăng nhập 2 lớp</h3><div id="otpbox"></div></section>
+    <section class="card"><h3>⚠️ Cảnh báo khi Zalo bị ngắt</h3>
+      <p class="muted small">Báo ngay khi một tài khoản Zalo bị đá ra (mở Zalo Web nơi khác) hoặc hết phiên, để kịp kết nối lại / quét QR.</p>
+      <label class="toggle"><input type="checkbox" data-pref="alert_push" ${pf.alert_push !== false ? "checked" : ""}> Gửi thông báo trên máy (push)</label>
+      <div id="tgbox" class="muted small">Đang tải…</div>
+    </section>
+    <a class="btn block" href="#/activity">📜 Nhật ký hoạt động</a>
     ${state.user.is_admin ? `<a class="btn block" href="#/admin">🛠 Trang quản trị (người dùng, mã mời, tính năng)</a>` : ""}
     <section class="card"><h3>Đổi mật khẩu</h3>
       <form id="pw"><input name="current" type="password" placeholder="Mật khẩu hiện tại" autocomplete="current-password" required>
@@ -1141,6 +1192,7 @@ async function renderSettings() {
     try { await api("POST", "password", Object.fromEntries(new FormData(e.target))); toast("Đã đổi mật khẩu"); e.target.reset(); } catch (err) { toast(err.message); }
   };
   document.getElementById("logout").onclick = logout;
+  drawOtp(); drawTelegram();
   const lf = document.getElementById("lbform"), lid = lf.querySelector("[name=id]"), lname = lf.querySelector("[name=name]");
   const resetL = () => { lf.reset(); lid.value = ""; document.getElementById("lbsave").textContent = "Thêm nhãn"; document.getElementById("lbnew").hidden = true; };
   const drawL = (labels) => {
@@ -1193,6 +1245,107 @@ async function renderSettings() {
   };
 }
 
+// Thẻ "Đăng nhập 2 lớp" trong cài đặt
+function drawOtp(step) {
+  const box = document.getElementById("otpbox"); if (!box) return;
+  if (step?.recovery) {
+    box.innerHTML = `<p>✅ Đã bật đăng nhập 2 lớp.</p>
+      <p class="small"><b>Lưu các mã dự phòng này</b> (chụp màn hình hoặc chép ra giấy). Mỗi mã dùng được 1 lần khi bạn mất điện thoại. Sẽ không hiện lại.</p>
+      <pre class="codes">${step.recovery.map(esc).join("\n")}</pre>
+      <button class="btn" id="otpcopy">Sao chép</button> <button class="btn primary" id="otpdone">Đã lưu</button>`;
+    box.querySelector("#otpcopy").onclick = () => navigator.clipboard.writeText(step.recovery.join("\n")).then(() => toast("Đã sao chép"));
+    box.querySelector("#otpdone").onclick = () => drawOtp();
+    return;
+  }
+  if (step?.secret) {
+    box.innerHTML = `<ol class="small steps">
+        <li>Cài <b>Google Authenticator</b> (hoặc Authy, Microsoft Authenticator) trên điện thoại.</li>
+        <li>${isIOS || /Android/.test(navigator.userAgent) ? `Bấm <a class="link" href="${esc(step.uri)}">Thêm vào ứng dụng xác thực</a>, hoặc chọn` : "Trong ứng dụng chọn"} <b>Nhập khoá thiết lập</b> → tên: <b>Zalo Multi</b>, khoá:
+          <div class="secret"><code>${esc(step.secret)}</code> <button type="button" class="link" id="otpsc">sao chép</button></div> loại: <b>Dựa trên thời gian</b>.</li>
+        <li>Nhập mã 6 số đang hiện trong ứng dụng:</li></ol>
+      <form id="otpf"><input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" required placeholder="123456" class="otp-in">
+        <button class="btn primary">Xác nhận & bật</button> <button type="button" class="btn" id="otpx">Huỷ</button></form>`;
+    box.querySelector("#otpsc").onclick = () => navigator.clipboard.writeText(step.secret.replace(/\s/g, "")).then(() => toast("Đã sao chép khoá"));
+    box.querySelector("#otpx").onclick = () => drawOtp();
+    box.querySelector("#otpf").onsubmit = async (e) => {
+      e.preventDefault();
+      try { const r = await api("POST", "otp/enable", { code: e.target.querySelector("input").value }); state.user.otp = true; drawOtp(r); }
+      catch (err) { toast(err.message, 4000); }
+    };
+    return;
+  }
+  box.innerHTML = state.user.otp
+    ? `<p>✅ Đang bật. Mỗi lần đăng nhập trên máy mới cần thêm mã 6 số từ ứng dụng xác thực.</p><button class="btn" id="otpoff">Tắt đăng nhập 2 lớp</button>`
+    : `<p class="muted small">Thêm một lớp bảo vệ: ngoài mật khẩu, khi đăng nhập cần mã 6 số từ ứng dụng trên điện thoại. ${state.user.is_admin ? "<b>Nên bật cho tài khoản quản trị.</b>" : ""}</p><button class="btn primary" id="otpon">Bật đăng nhập 2 lớp</button>`;
+  box.querySelector("#otpon")?.addEventListener("click", async () => { try { drawOtp(await api("POST", "otp/setup")); } catch (err) { toast(err.message); } });
+  box.querySelector("#otpoff")?.addEventListener("click", async () => {
+    const password = prompt("Nhập mật khẩu để tắt đăng nhập 2 lớp:");
+    if (!password) return;
+    try { await api("POST", "otp/disable", { password }); state.user.otp = false; toast("Đã tắt"); drawOtp(); } catch (err) { toast(err.message); }
+  });
+}
+// Kết nối Telegram nhận cảnh báo
+async function drawTelegram() {
+  const box = document.getElementById("tgbox"); if (!box) return;
+  let st;
+  try { st = await api("GET", "telegram"); } catch { box.textContent = ""; return; }
+  if (!st.available) {
+    box.innerHTML = `Nhận cảnh báo qua Telegram: ${state.user.is_admin ? `cài bot ở <a class="link" href="#/admin">Trang quản trị → Tính năng</a>.` : "quản trị viên chưa cài bot Telegram."}`;
+    return;
+  }
+  box.innerHTML = st.linked
+    ? `<p>✅ Đã kết nối Telegram.</p><button class="btn" id="tgtest">Gửi thử</button> <button class="btn" id="tgoff">Ngắt Telegram</button>`
+    : `<p>Nhận cảnh báo qua Telegram:</p><button class="btn primary" id="tgon">Kết nối Telegram</button>`;
+  box.querySelector("#tgon")?.addEventListener("click", async () => {
+    const w = window.open("about:blank", "_blank");
+    try {
+      const { url } = await api("POST", "telegram/link");
+      if (w) w.location = url; else location.href = url;
+      box.insertAdjacentHTML("beforeend", `<p class="small">Trong Telegram bấm <b>Bắt đầu / Start</b>, rồi quay lại đây. <button class="link" id="tgre">Đã bấm, kiểm tra lại</button></p>`);
+      box.querySelector("#tgre").onclick = drawTelegram;
+    } catch (err) { w?.close(); toast(err.message, 4000); }
+  });
+  box.querySelector("#tgtest")?.addEventListener("click", () => api("POST", "telegram/test").then(() => toast("Đã gửi, xem Telegram")).catch((e) => toast(e.message, 4000)));
+  box.querySelector("#tgoff")?.addEventListener("click", () => api("POST", "telegram/unlink").then(drawTelegram));
+}
+
+// ---------- nhật ký hoạt động ----------
+const ACTIONS = {
+  login: "Đăng nhập", login_fail: "Đăng nhập sai mật khẩu", login_otp_fail: "Nhập sai mã 2 lớp", logout: "Đăng xuất", register: "Đăng ký",
+  password: "Đổi mật khẩu", otp_on: "Bật đăng nhập 2 lớp", otp_off: "Tắt đăng nhập 2 lớp", invite: "Tạo mã mời",
+  add_account: "Thêm tài khoản Zalo", reqr_account: "Quét lại QR", remove_account: "Xoá tài khoản Zalo", reconnect: "Kết nối lại Zalo",
+  account_notify: "Đổi thông báo tài khoản", zalo_kicked: "Zalo bị ngắt (mở nơi khác)", zalo_expired: "Zalo hết phiên",
+  send_text: "Gửi tin nhắn", send_image: "Gửi ảnh", send_file: "Gửi file", send_sticker: "Gửi sticker", recall: "Thu hồi tin", delete_msg: "Xoá tin phía mình",
+  share: "Giao tài khoản cho nhân viên", unshare: "Thu hồi tài khoản đã giao", leave: "Bỏ tài khoản được giao",
+  labels: "Gắn nhãn", note: "Thêm ghi chú", schedule: "Đặt lịch hẹn", schedule_cancel: "Huỷ lịch hẹn", export: "Xuất lịch sử chat",
+  admin_user: "QT: đổi quyền/khoá người dùng", admin_reset_password: "QT: đặt lại mật khẩu", admin_reset_otp: "QT: tắt 2 lớp của người dùng",
+  admin_delete_user: "QT: xoá người dùng", admin_settings: "QT: đổi cài đặt",
+};
+const ACTION_GROUPS = [["", "Tất cả"], ["login", "Đăng nhập"], ["login_fail", "Sai mật khẩu"], ["send_text", "Gửi tin"], ["zalo_kicked", "Zalo bị ngắt"], ["remove_account", "Xoá tài khoản"]];
+async function renderActivity(more) {
+  const f = state.actFilter || "";
+  const before = more ? state.activity.at(-1)?.ts : null;
+  const who = state.actUser;
+  const { items } = await api("GET", `activity?action=${encodeURIComponent(f)}${who ? `&user=${who.id}` : ""}${before ? `&before=${before}` : ""}`);
+  state.activity = more ? state.activity.concat(items) : items;
+  const list = state.activity;
+  $app.innerHTML = `
+  ${header("Nhật ký hoạt động", { back: "#/settings" })}
+  <div class="filters">${ACTION_GROUPS.map(([k, t]) => `<button type="button" data-a="${k}" class="${f === k ? "on" : ""}">${t}</button>`).join("")}</div>
+  <main class="scroll">
+    ${who ? `<div class="warn">Chỉ hiện hoạt động của <b>${esc(who.name)}</b> <button class="btn sm" id="allu">Xem tất cả</button></div>` : ""}
+    <p class="muted small pad">${state.user.is_admin ? "Quản trị viên xem được hoạt động của mọi người." : "Hoạt động của bạn và của nhân viên trên các tài khoản Zalo bạn sở hữu."} Không ghi nội dung tin nhắn. Lưu 180 ngày.</p>
+    <ul class="list act">${list.map((x) => `<li class="row ${/fail|kicked|expired|delete|remove/.test(x.action) ? "warn-row" : ""}"><div class="grow">
+      <div><b>${esc(x.username || "?")}</b> · ${esc(ACTIONS[x.action] || x.action)}${x.detail ? ` <span class="muted">(${esc(x.detail)})</span>` : ""}</div>
+      <div class="sub small">${fmtDate(x.ts)}${x.accountName ? ` · ${esc(x.accountName)}` : ""}${x.threadId ? ` · <a class="link" href="${chatHash(x.accountId, x.type, x.threadId)}">${esc(x.threadName || "hội thoại")}</a>` : ""}${x.ip ? ` · IP ${esc(x.ip)}` : ""}</div>
+    </div></li>`).join("") || `<li class="muted small pad">Chưa có hoạt động.</li>`}</ul>
+    ${items.length >= 100 ? `<div class="center pad"><button class="btn" id="more">Xem cũ hơn</button></div>` : ""}
+  </main>`;
+  document.querySelectorAll("[data-a]").forEach((b) => b.onclick = () => { state.actFilter = b.dataset.a; renderActivity(); });
+  document.getElementById("more")?.addEventListener("click", () => renderActivity(true));
+  document.getElementById("allu")?.addEventListener("click", () => { state.actUser = null; renderActivity(); });
+}
+
 // Đăng xuất khỏi app (các tài khoản Zalo vẫn chạy trên server, đăng nhập lại là thấy)
 async function logout() {
   if (!confirm("Đăng xuất khỏi app trên máy này? Máy này sẽ không nhận thông báo nữa cho tới khi đăng nhập lại.")) return;
@@ -1211,6 +1364,8 @@ const SETTING_INFO = {
   media_store: ["Lưu ảnh/file về server", "Tải ảnh, file, video, tin thoại nhận được về server để xem lại khi link Zalo hết hạn.", "bool"],
   media_max_mb: ["Giới hạn dung lượng mỗi file (MB)", "File lớn hơn sẽ không lưu, vẫn mở bằng link Zalo. 0 = không giới hạn.", "num"],
   group_history: ["Số tin lịch sử nhóm", "Số tin cũ lấy từ Zalo khi mở một nhóm lần đầu (tối đa 500).", "num"],
+  telegram_bot_token: ["Token bot Telegram (cảnh báo)",
+    "Để gửi cảnh báo khi Zalo bị ngắt: trong Telegram nhắn <b>@BotFather</b> → /newbot → đặt tên → dán token nhận được vào đây. Mỗi người tự bấm <i>Kết nối Telegram</i> trong Cài đặt. Để trống = tắt.", "secret"],
 };
 async function renderAdmin() {
   if (!state.user.is_admin) return go("#/settings");
@@ -1233,7 +1388,7 @@ async function renderAdmin() {
     <section class="card"><h3>Người dùng</h3>
       <ul class="list admin-users">${users.map((u) => `
         <li class="row">
-          <div class="grow"><div class="name">${esc(u.username)} ${u.isAdmin ? `<span class="tag">quản trị</span>` : ""} ${u.disabled ? `<span class="tag red">đã khoá</span>` : ""}</div>
+          <div class="grow"><div class="name">${esc(u.username)} ${u.isAdmin ? `<span class="tag">quản trị</span>` : ""} ${u.disabled ? `<span class="tag red">đã khoá</span>` : ""} ${u.otp ? `<span class="tag">2 lớp</span>` : ""}</div>
             <div class="sub small">${u.accounts} Zalo (${u.online} online) · ${u.devices} máy · vào lần cuối ${fmtDate(u.lastSeen)}</div></div>
           ${u.id === state.user.id ? `<span class="muted small">bạn</span>` : `<button class="icon-btn" data-u="${u.id}" aria-label="Tuỳ chọn">⋯</button>`}
         </li>`).join("")}</ul>
@@ -1247,6 +1402,7 @@ async function renderAdmin() {
     <section class="card"><h3>Tính năng</h3>
       <form id="setf">${Object.entries(settings).map(([k, v]) => {
         const [label, help, kind] = SETTING_INFO[k] || [k, "", typeof v === "boolean" ? "bool" : "num"];
+        if (kind === "secret") return `<label>${esc(label)}<input type="password" name="${k}" value="${esc(v)}" autocomplete="off" placeholder="Chưa cài"><span class="muted small">${help}</span></label>`;
         return kind === "bool"
           ? `<label class="toggle"><input type="checkbox" name="${k}" ${v ? "checked" : ""}> <span><b>${esc(label)}</b><br><span class="muted small">${esc(help)}</span></span></label>`
           : `<label>${esc(label)}<input type="number" min="0" name="${k}" value="${esc(v)}"><span class="muted small">${esc(help)}</span></label>`;
@@ -1263,7 +1419,7 @@ async function renderAdmin() {
   document.getElementById("setf").onsubmit = async (e) => {
     e.preventDefault();
     const body = {};
-    for (const el of e.target.elements) if (el.name) body[el.name] = el.type === "checkbox" ? el.checked : Number(el.value);
+    for (const el of e.target.elements) if (el.name) body[el.name] = el.type === "checkbox" ? el.checked : el.type === "password" ? el.value : Number(el.value);
     try { await api("POST", "admin/settings", body); toast("Đã lưu cài đặt"); renderAdmin(); } catch (err) { toast(err.message); }
   };
   document.querySelectorAll("[data-u]").forEach((b) => b.onclick = () => {
@@ -1272,6 +1428,11 @@ async function renderAdmin() {
     sheet([
       [u.isAdmin ? "Bỏ quyền quản trị" : "Cấp quyền quản trị", () => act({ isAdmin: !u.isAdmin }, "Đã cập nhật quyền")],
       [u.disabled ? "Mở khoá tài khoản" : "Khoá tài khoản (ngắt Zalo, đăng xuất)", () => act({ disabled: !u.disabled }, u.disabled ? "Đã mở khoá" : "Đã khoá")],
+      u.otp && ["Tắt đăng nhập 2 lớp (khi họ mất điện thoại)", async () => {
+        if (!confirm(`Tắt đăng nhập 2 lớp của ${u.username}?`)) return;
+        api("POST", `admin/users/${u.id}/reset-otp`).then(() => { toast("Đã tắt"); renderAdmin(); }).catch((e) => toast(e.message));
+      }],
+      ["📜 Xem nhật ký của người này", () => { state.actFilter = ""; state.actUser = { id: u.id, name: u.username }; go("#/activity"); }],
       ["Đặt lại mật khẩu", async () => {
         if (!confirm(`Đặt lại mật khẩu cho ${u.username}?`)) return;
         try { const { password } = await api("POST", `admin/users/${u.id}/reset-password`); prompt(`Mật khẩu mới của ${u.username} (gửi cho họ, họ nên đổi lại):`, password); }

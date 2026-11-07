@@ -6,6 +6,9 @@ import { PORT, HOST, BASE_PATH, VAPID } from "./config.js";
 import * as auth from "./auth.js";
 import * as zalo from "./zalo.js";
 import * as crm from "./crm.js";
+import { logActivity, listActivity } from "./activity.js";
+import * as alerts from "./alerts.js";
+import { exportThread } from "./export.js";
 import { saveSubscription, removeSubscription, addStream, pushToUser } from "./push.js";
 import * as admin from "./admin.js";
 import { serveMedia } from "./media.js";
@@ -69,14 +72,72 @@ const routes = [];
 const route = (method, pattern, handler, { open = false } = {}) => {
   const keys = [];
   const re = new RegExp("^" + pattern.replace(/:(\w+)/g, (_, k) => { keys.push(k); return "([^/]+)"; }) + "$");
-  routes.push({ method, re, keys, handler, open });
+  routes.push({ method, re, keys, handler, open, log: LOG[`${method} ${pattern}`] });
+};
+// Thao tác ghi vào nhật ký hoạt động (khi thành công). Nội dung tin nhắn không được ghi.
+const LOG = {
+  "POST /api/logout": "logout", "POST /api/password": "password", "POST /api/invites": "invite",
+  "POST /api/otp/enable": "otp_on", "POST /api/otp/disable": "otp_off",
+  "DELETE /api/accounts/:id": "remove_account", "POST /api/accounts/:id/reconnect": "reconnect",
+  "POST /api/accounts/:id/notify": "account_notify",
+  "POST /api/accounts/:id/threads/:type/:tid/text": "send_text", "POST /api/accounts/:id/threads/:type/:tid/image": "send_image",
+  "POST /api/accounts/:id/threads/:type/:tid/file": "send_file", "POST /api/accounts/:id/threads/:type/:tid/sticker": "send_sticker",
+  "POST /api/accounts/:id/messages/:mid/recall": "recall", "DELETE /api/accounts/:id/messages/:mid": "delete_msg",
+  "POST /api/accounts/:id/shares": "share", "DELETE /api/accounts/:id/shares/:uid": "unshare", "POST /api/accounts/:id/leave": "leave",
+  "POST /api/accounts/:id/threads/:type/:tid/labels": "labels", "POST /api/accounts/:id/threads/:type/:tid/notes": "note",
+  "POST /api/accounts/:id/threads/:type/:tid/schedules": "schedule", "DELETE /api/schedules/:sid": "schedule_cancel",
+  "GET /api/accounts/:id/threads/:type/:tid/export": "export",
+  "POST /api/admin/users/:uid": "admin_user", "POST /api/admin/users/:uid/reset-password": "admin_reset_password",
+  "POST /api/admin/users/:uid/reset-otp": "admin_reset_otp", "DELETE /api/admin/users/:uid": "admin_delete_user",
+  "POST /api/admin/settings": "admin_settings",
 };
 
 route("GET", "/api/me", (req, res, { user }) => send(res, 200, {
   user, needsInvite: auth.needsInvite(), firstUser: auth.noUsers(), vapidPublicKey: VAPID.publicKey,
 }), { open: true });
-route("POST", "/api/register", async (req, res) => send(res, 200, { user: auth.register(req, res, await readJson(req)) }), { open: true });
-route("POST", "/api/login", async (req, res, { ip }) => send(res, 200, { user: auth.login(req, res, await readJson(req), ip) }), { open: true });
+route("POST", "/api/register", async (req, res, { ip }) => {
+  const user = auth.register(req, res, await readJson(req));
+  logActivity({ user, action: "register", ip });
+  send(res, 200, { user });
+}, { open: true });
+route("POST", "/api/login", async (req, res, { ip }) => {
+  const body = await readJson(req);
+  let r;
+  try { r = auth.login(req, res, body, ip); }
+  catch (e) { if (e.status === 401) logActivity({ username: String(body.username || "").slice(0, 32), action: "login_fail", ip }); throw e; }
+  if (r.otp) return send(res, 200, { otp: true, ticket: r.ticket });
+  logActivity({ user: r, action: "login", ip });
+  send(res, 200, { user: r });
+}, { open: true });
+route("POST", "/api/login/otp", async (req, res, { ip }) => {
+  let r;
+  try { r = auth.loginOtp(req, res, await readJson(req), ip); }
+  catch (e) { if (e.status === 401) logActivity({ action: "login_otp_fail", ip }); throw e; }
+  logActivity({ user: r, action: "login", detail: "có mã 2 lớp", ip });
+  send(res, 200, { user: r });
+}, { open: true });
+route("POST", "/api/otp/setup", (req, res, { user }) => send(res, 200, auth.otpSetup(user)));
+route("POST", "/api/otp/enable", async (req, res, { user }) => send(res, 200, auth.otpEnable(user, await readJson(req))));
+route("POST", "/api/otp/disable", async (req, res, { user }) => { auth.otpDisable(user, await readJson(req)); send(res, 200, { ok: true }); });
+route("GET", "/api/accounts/:id/threads/:type/:tid/export", (req, res, { user, p, url }) => {
+  const s = url.searchParams;
+  const f = exportThread(user, p.id, p.type, p.tid, { format: s.get("format"), from: s.get("from"), to: s.get("to") });
+  res.writeHead(200, {
+    "Content-Type": f.type, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+    // HTML xuất ra chỉ để tải về, không chạy trong trang app
+    "Content-Disposition": `attachment; filename="${f.filename}"; filename*=UTF-8''${encodeURIComponent(f.filename)}`,
+    "Content-Security-Policy": "default-src 'none'; img-src https:; style-src 'unsafe-inline'; sandbox",
+  });
+  res.end(f.data);
+});
+route("GET", "/api/telegram", (req, res, { user }) => send(res, 200, alerts.telegramStatus(user)));
+route("POST", "/api/telegram/link", async (req, res, { user }) => send(res, 200, await alerts.telegramLink(user)));
+route("POST", "/api/telegram/unlink", (req, res, { user }) => { alerts.telegramUnlink(user); send(res, 200, { ok: true }); });
+route("POST", "/api/telegram/test", async (req, res, { user }) => { await alerts.telegramTest(user); send(res, 200, { ok: true }); });
+route("GET", "/api/activity", (req, res, { user, url }) => {
+  const s = url.searchParams;
+  send(res, 200, { items: listActivity(user, { userId: s.get("user"), accountId: s.get("acc"), action: s.get("action"), before: s.get("before") }) });
+});
 route("POST", "/api/logout", (req, res) => { auth.logout(req, res); send(res, 200, { ok: true }); }, { open: true });
 route("POST", "/api/password", async (req, res, { user }) => { auth.changePassword(user, await readJson(req)); send(res, 200, { ok: true }); });
 route("POST", "/api/prefs", async (req, res, { user }) => send(res, 200, { prefs: auth.setPrefs(user, await readJson(req)) }));
@@ -187,6 +248,7 @@ adminRoute("GET", "/api/admin/overview", (req, res) => send(res, 200, {
 }));
 adminRoute("POST", "/api/admin/users/:uid", async (req, res, { user, p }) => { admin.updateUser(user, p.uid, await readJson(req)); send(res, 200, { ok: true }); });
 adminRoute("POST", "/api/admin/users/:uid/reset-password", (req, res, { user, p }) => send(res, 200, { password: admin.resetPassword(user, p.uid) }));
+adminRoute("POST", "/api/admin/users/:uid/reset-otp", (req, res, { p }) => { auth.resetOtp(p.uid); send(res, 200, { ok: true }); });
 adminRoute("DELETE", "/api/admin/users/:uid", (req, res, { user, p }) => { admin.deleteUser(user, p.uid); send(res, 200, { ok: true }); });
 adminRoute("DELETE", "/api/admin/invites/:code", (req, res, { p }) => { admin.deleteInvite(p.code); send(res, 200, { ok: true }); });
 adminRoute("POST", "/api/admin/settings", async (req, res) => send(res, 200, { settings: admin.saveSettings(await readJson(req)) }));
@@ -212,6 +274,10 @@ const server = http.createServer(async (req, res) => {
     if (!r.open && !user) throw auth.httpError(401, "Chưa đăng nhập");
     const ip = String(req.headers["x-real-ip"] || req.socket.remoteAddress);
     await r.handler(req, res, { user, p: params, url, ip });
+    if (r.log && res.statusCode < 400) logActivity({
+      user, ip, action: r.log, accountId: params.id, type: params.type, threadId: params.tid,
+      detail: params.uid ? `user #${params.uid}` : params.sid ? `lịch #${params.sid}` : null,
+    });
   } catch (e) {
     if (!e.status) console.error(e);
     if (!res.headersSent) send(res, e.status || 500, { error: e.status ? e.message : "Lỗi máy chủ: " + (e.message || e) });

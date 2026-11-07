@@ -27,6 +27,10 @@ Bản chạy thử: <https://nguyenhuyhoang.website/app/>
 - **Hẹn giờ gửi tin** (server tự gửi đúng giờ, không cần mở app) và **nhắc việc** qua thông báo push; trang *Lịch hẹn & nhắc việc* tổng hợp
 - **Giao tài khoản Zalo cho nhân viên**: chủ tài khoản giao cho người dùng app khác với quyền *chỉ xem* hoặc *được trả lời*; nhân viên cũng nhận thông báo tin mới
 - **Thống kê** theo tài khoản: tin đến/gửi mỗi ngày, thời gian trả lời trung bình, khách chưa được trả lời, số khách theo nhãn
+- **Cảnh báo khi Zalo bị ngắt / hết phiên**: thông báo push và **Telegram** (quản trị viên cài token bot, mỗi người tự bấm *Kết nối Telegram*)
+- **Xuất lịch sử chat** một hội thoại ra trang HTML (xem, in PDF) hoặc CSV (mở bằng Excel)
+- **Đăng nhập 2 lớp** (mã 6 số từ Google Authenticator/Authy, kèm 8 mã dự phòng); quản trị viên tắt được 2 lớp cho người mất điện thoại
+- **Nhật ký hoạt động** (`#/activity`): đăng nhập, gửi tin, xoá tài khoản, thao tác quản trị… (không ghi nội dung tin, lưu 180 ngày); chủ tài khoản Zalo xem được việc nhân viên làm
 - Trang quản trị (`#/admin`): người dùng (khoá, cấp quyền, đặt lại mật khẩu, xoá), mã mời, bật/tắt tính năng, thống kê
 - Thông báo push (Android, máy tính; iPhone từ iOS 16.4 khi đã thêm vào màn hình chính)
 - Realtime qua Server-Sent Events, tự kết nối lại
